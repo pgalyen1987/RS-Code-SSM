@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codingssm"
+version = "0.1.0"
+description = "CodingSSM — 1.6B reasoning model for Python code generation. Fully offline, pass@16 ~96% HumanEval."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+keywords = ["llm", "code-generation", "mamba", "reasoning", "offline"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.2.0",
+    "safetensors>=0.4.0",
+    "transformers>=4.40.0",
+    "tokenizers>=0.19.0",
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.6.0",
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+    "huggingface-hub>=1.0.0",
+    "mamba-ssm>=2.0.0; sys_platform != 'win32'",
+    "causal-conv1d>=1.2.0; sys_platform != 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "ruff"]
+cpu-only = [
+    "torch>=2.2.0",
+    "safetensors>=0.4.0",
+    "transformers>=4.40.0",
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.6.0",
+    "typer>=0.9.0",
+    "rich>=13.7.0",
+]
+
+[project.scripts]
+ssm = "cli:main"
+codingssm = "cli:main"
+
+[project.urls]
+Homepage = "https://github.com/your-username/CodingSSM"
+"Bug Tracker" = "https://github.com/your-username/CodingSSM/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ssm*", "arch*", "train*", "cli*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.md"]
