@@ -30,9 +30,9 @@ _repo = Path(__file__).resolve().parent.parent
 EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(_repo / "epichat")
 #sys.path.insert(0, EPICHAT_DIR)
 
-from ..epichat.core.knowledge_graph import KnowledgeGraph
-from ..epichat.core.epistemic_unit import EpistemicUnit, KnowledgeType, Source
-from ..epichat.seeding.code_seeder import CodeSeeder
+from epichat.core.knowledge_graph import KnowledgeGraph
+from epichat.core.epistemic_unit import EpistemicUnit, KnowledgeType, Source
+from epichat.seeding.code_seeder import CodeSeeder
 
 
 # ─── 1. Wikipedia topics (~500 topics) ───────────────────────────────────────
