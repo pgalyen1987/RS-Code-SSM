@@ -28,7 +28,7 @@ from pathlib import Path
 # EPICHAT_DIR from env, or repo/epichat
 _repo = Path(__file__).resolve().parent.parent
 EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(_repo / "epichat")
-sys.path.insert(0, EPICHAT_DIR)
+#sys.path.insert(0, EPICHAT_DIR)
 
 from epichat.core.knowledge_graph import KnowledgeGraph
 from epichat.core.epistemic_unit import EpistemicUnit, KnowledgeType, Source
