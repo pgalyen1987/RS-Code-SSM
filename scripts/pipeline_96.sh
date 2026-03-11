@@ -14,9 +14,11 @@
 
 set -e
 cd "$(dirname "$0")/.."
-source .venv/bin/activate
+[ -f scripts/env.sh ] && source scripts/env.sh
+[ -f .venv/bin/activate ] && source .venv/bin/activate
 
 mkdir -p data logs checkpoints/sft_v2 checkpoints/grpo checkpoints/self_improve
+EPICHAT_DIR="${EPICHAT_DIR:-$PWD/epichat}"
 
 DR1_HOST="http://localhost:11437"   # DeepSeek-R1 on user Ollama
 SYS_HOST="http://localhost:11434"   # llama3.1:8b on system Ollama
@@ -102,7 +104,7 @@ if [ "$DONE_R1" -lt 2000 ]; then
     --max-tokens 3000 \
     --n-samples 4 \
     --verified-only \
-    --epichat-dir /home/me/EpiChat \
+    --epichat-dir "$EPICHAT_DIR" \
     2>&1 | tee -a "$LOG"
   log "R1 traces done: $(wc -l < $DR1_TRACES) verified traces"
 else
@@ -201,7 +203,7 @@ for ITER in 1 2 3; do
       --max-tokens 3000 \
       --n-samples 8 \
       --verified-only \
-      --epichat-dir /home/me/EpiChat \
+      --epichat-dir "$EPICHAT_DIR" \
       2>&1 | tee -a "$LOG"
     log "  Iter $ITER traces: $(wc -l < $ITER_TRACES) verified"
   else
@@ -211,7 +213,7 @@ for ITER in 1 2 3; do
   # Re-export EpiChat traces (EU count may have grown)
   log "  Re-exporting EpiChat traces…"
   python -u -m train.epichat_export \
-    --epichat-dir /home/me/EpiChat \
+    --epichat-dir "$EPICHAT_DIR" \
     --output data/epichat_traces.jsonl \
     --min-confidence 0.4 \
     2>&1 | tee -a "$LOG"

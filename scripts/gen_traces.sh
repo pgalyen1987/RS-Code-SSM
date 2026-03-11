@@ -4,16 +4,18 @@
 # Step 2: Generate teacher reasoning traces → data/reasoning_traces.jsonl (slow, overnight)
 #
 # Resumes automatically if interrupted.
+# Source scripts/env.sh for EPICHAT_DIR, or set env vars before running.
 
 set -e
 cd "$(dirname "$0")/.."
-source .venv/bin/activate
+[ -f scripts/env.sh ] && source scripts/env.sh
+[ -f .venv/bin/activate ] && source .venv/bin/activate
 
 mkdir -p data logs
 
 LOG="logs/traces_$(date +%Y%m%d_%H%M%S).log"
 echo "=== CodingSSM Trace Generation ===" | tee "$LOG"
-echo "EpiChat:  /home/me/EpiChat" | tee -a "$LOG"
+echo "EpiChat:  ${EPICHAT_DIR:-$PWD/epichat}" | tee -a "$LOG"
 echo "Teacher:  Ollama HTTP API (auto-selects best available model)" | tee -a "$LOG"
 echo "Log:      $LOG" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
@@ -21,7 +23,7 @@ echo "" | tee -a "$LOG"
 # ── Step 1: EpiChat export (fast, ~30s, no teacher needed) ──────────────────
 echo "=== Step 1: Exporting EpiChat knowledge ===" | tee -a "$LOG"
 python -u -m train.epichat_export \
-  --epichat-dir /home/me/EpiChat \
+  --epichat-dir "${EPICHAT_DIR:-$PWD/epichat}" \
   --output data/epichat_traces.jsonl \
   --min-confidence 0.4 \
   2>&1 | tee -a "$LOG"
@@ -39,7 +41,7 @@ python -u -m train.reasoning_data \
   --n-problems 5000 \
   --sources humaneval mbpp codealpaca \
   --max-tokens 2048 \
-  --epichat-dir /home/me/EpiChat \
+  --epichat-dir "${EPICHAT_DIR:-$PWD/epichat}" \
   2>&1 | tee -a "$LOG"
 
 echo "" | tee -a "$LOG"

@@ -2,6 +2,7 @@
 End-to-end smoke test: tiny model + synthetic data through one training step.
 No tokenizer download required — uses fake token IDs.
 """
+import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -62,7 +63,7 @@ print(f"  Mean grad norm:    {sum(grad_norms)/len(grad_norms):.4f}")
 # 6. Trainer step
 print("\nTrainer one-step test...")
 train_cfg = TrainConfig(
-    output_dir="/tmp/ssm_smoke_test",
+    output_dir=os.environ.get("TMP_DIR", "/tmp") + "/ssm_smoke_test",
     batch_size=2, grad_accum_steps=1,
     learning_rate=1e-3, epochs=1,
     save_every_n_steps=999999,

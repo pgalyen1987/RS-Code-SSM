@@ -3,7 +3,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
-CONFIG_DIR = Path("~/.ssm").expanduser()
+from ssm.paths import CONFIG_DIR
+
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULTS = {

@@ -53,7 +53,7 @@ class TTCInference:
         temperature: float = 0.8,
         max_new_tokens: int = 512,
         exec_timeout: int = 10,
-        epichat_dir: str = "/home/me/EpiChat",
+        epichat_dir: str = None,
     ):
         from ssm.inference_sft import CodingSSMInference
         self._model = CodingSSMInference(

@@ -16,8 +16,8 @@ Output format (data/epichat_traces.jsonl):
     }
 
 Usage:
-    python -m train.epichat_export \
-        --epichat-dir /home/me/EpiChat \
+    python -m train.epichat_export \\
+        --epichat-dir $EPICHAT_DIR \\
         --output data/epichat_traces.jsonl
 """
 
@@ -357,12 +357,20 @@ def export(epichat_dir: Path, output_path: Path, min_confidence: float = 0.4) ->
 
 def main():
     parser = argparse.ArgumentParser(description="Export EpiChat knowledge as SFT training traces")
-    parser.add_argument("--epichat-dir", default="/home/me/EpiChat", help="EpiChat root directory")
+    parser.add_argument(
+        "--epichat-dir",
+        default=os.environ.get("EPICHAT_DIR", ""),
+        help="EpiChat root directory (default: EPICHAT_DIR env)",
+    )
     parser.add_argument("--output", default="data/epichat_traces.jsonl", help="Output JSONL file")
     parser.add_argument("--min-confidence", type=float, default=0.4, help="Minimum EU confidence")
     args = parser.parse_args()
 
-    n = export(Path(args.epichat_dir), Path(args.output), args.min_confidence)
+    epichat_dir = args.epichat_dir or os.environ.get("EPICHAT_DIR")
+    if not epichat_dir:
+        from ssm.paths import EPICHAT_DIR
+        epichat_dir = str(EPICHAT_DIR)
+    n = export(Path(epichat_dir), Path(args.output), args.min_confidence)
     print(f"[INFO] Total: {n} traces", file=sys.stderr)
 
 

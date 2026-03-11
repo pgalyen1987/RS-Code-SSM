@@ -2,9 +2,9 @@
 Generate <think>...</think> chain-of-thought reasoning traces from teacher model.
 
 Usage:
-    python -m train.reasoning_data \
-        --model ~/.ssm/models/Qwen3.5-35B-A3B-Q4_K_M.gguf \
-        --output data/reasoning_traces.jsonl \
+    python -m train.reasoning_data \\
+        --model $MODEL_DIR/Qwen3.5-35B-A3B-Q4_K_M.gguf \\
+        --output data/reasoning_traces.jsonl \\
         --n-problems 5000
 
 Output JSONL format (one JSON per line):
@@ -299,7 +299,7 @@ def _ollama_generate(
     max_tokens: int = 2048,
     temperature: float = 0.6,
     top_p: float = 0.95,
-    timeout: int = 300,
+    timeout: int = 1200,
 ) -> str:
     """Call Ollama /api/generate and return the response text."""
     payload = json.dumps({
@@ -572,7 +572,7 @@ def main():
     )
     parser.add_argument(
         "--epichat-dir",
-        default="/home/me/EpiChat",
+        default=os.environ.get("EPICHAT_DIR", ""),
         help="EpiChat directory for knowledge-grounded context injection (set to '' to disable)",
     )
     args = parser.parse_args()
@@ -596,7 +596,14 @@ def main():
     all_problems = all_problems[: args.n_problems]
     print(f"[INFO] Total problems: {len(all_problems)}", file=sys.stderr)
 
-    epichat_dir = args.epichat_dir if args.epichat_dir else None
+    epichat_dir = args.epichat_dir or os.environ.get("EPICHAT_DIR")
+    if not epichat_dir:
+        try:
+            from ssm.paths import EPICHAT_DIR
+            if (EPICHAT_DIR / "episteme_data" / "units.json").exists():
+                epichat_dir = str(EPICHAT_DIR)
+        except Exception:
+            pass
     gen = ReasoningDataGenerator(
         ollama_model=args.model,
         ollama_host=args.ollama_host,

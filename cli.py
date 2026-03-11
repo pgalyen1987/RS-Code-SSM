@@ -145,7 +145,7 @@ def download(
     ),
     dest: Optional[str] = typer.Option(
         None, "--dest", "-d",
-        help="Directory to save the model (default: ~/.ssm/models/)",
+        help="Directory to save the model (default: MODEL_DIR env or ~/.ssm/models)",
     ),
     set_active: bool = typer.Option(
         True, "--set/--no-set",
@@ -162,7 +162,8 @@ def download(
         raise typer.Exit(1)
 
     m = models[model_name]
-    dest_dir = Path(dest).expanduser() if dest else Path("~/.ssm/models").expanduser()
+    from ssm.paths import MODEL_DIR
+    dest_dir = Path(dest).expanduser() if dest else MODEL_DIR
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     console.print(
@@ -747,7 +748,8 @@ def status_v2():
         console.print("[dim]–[/dim] EU expansion: not running")
 
     # EU count
-    eu_path = Path("/home/me/EpiChat/episteme_data/units.json")
+    from ssm.paths import EPICHAT_DIR
+    eu_path = EPICHAT_DIR / "episteme_data" / "units.json"
     if eu_path.exists():
         import json
         with open(eu_path) as f:
@@ -789,7 +791,8 @@ def ask_r1(
     context = ""
     try:
         from ssm.epichat_rag import EpiChatRAG
-        rag = EpiChatRAG("/home/me/EpiChat")
+        from ssm.paths import EPICHAT_DIR
+        rag = EpiChatRAG(str(EPICHAT_DIR))
         context = rag.get_context(question)
     except Exception:
         pass

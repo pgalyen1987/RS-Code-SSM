@@ -13,12 +13,14 @@ Key advantages over plain ChromaDB:
 
 Usage:
     from ssm.epichat_rag import EpiChatRAG
+    from ssm.paths import EPICHAT_DIR
 
-    rag = EpiChatRAG("/home/me/EpiChat")
+    rag = EpiChatRAG(EPICHAT_DIR)
     context = rag.get_context("implement binary search tree")
     # Returns formatted string ready to prepend to model prompt
 """
 
+import os
 import json
 from pathlib import Path
 from typing import Optional
@@ -30,9 +32,6 @@ class EpiChatRAG:
     Loads lazily on first query.
     """
 
-    # Default: local copy inside SSM project (symlinked from /home/me/EpiChat)
-    _DEFAULT_DIR = Path(__file__).parent.parent / "epichat"
-
     def __init__(
         self,
         epichat_dir: str = None,
@@ -40,7 +39,9 @@ class EpiChatRAG:
         min_confidence: float = 0.50,
         max_context_chars: int = 2000,
     ):
-        self._dir = Path(epichat_dir) if epichat_dir else self._DEFAULT_DIR
+        ep = os.environ.get("EPICHAT_DIR")
+        default = Path(ep) if ep else (Path(__file__).parent.parent / "epichat")
+        self._dir = Path(epichat_dir) if epichat_dir else default
         self.top_k = top_k
         self.min_confidence = min_confidence
         self.max_context_chars = max_context_chars

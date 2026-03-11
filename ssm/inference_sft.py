@@ -16,7 +16,9 @@ from typing import Optional
 
 import torch
 
-_ROOT = Path(__file__).parent.parent
+from ssm.paths import CONFIG_DIR, EPICHAT_DIR, REPO_ROOT
+
+_ROOT = REPO_ROOT
 
 
 class CodingSSMInference:
@@ -34,7 +36,7 @@ class CodingSSMInference:
         temperature: float = 0.7,
         top_p: float = 0.9,
         max_new_tokens: int = 512,
-        epichat_dir: str = "/home/me/EpiChat",
+        epichat_dir: str = None,
     ):
         self.device = torch.device(device)
         self.temperature = temperature
@@ -57,7 +59,7 @@ class CodingSSMInference:
         self._rag = None
         try:
             from ssm.epichat_rag import EpiChatRAG
-            self._rag = EpiChatRAG(epichat_dir)
+            self._rag = EpiChatRAG(epichat_dir or str(EPICHAT_DIR))
             print("[SSM] EpiChatRAG enabled", file=sys.stderr)
         except Exception as e:
             print(f"[SSM] EpiChatRAG disabled: {e}", file=sys.stderr)
@@ -72,7 +74,7 @@ class CodingSSMInference:
             tok = AutoTokenizer.from_pretrained(
                 "Qwen/Qwen2.5-0.5B",
                 trust_remote_code=True,
-                cache_dir=str(Path.home() / ".ssm" / "tokenizer_cache"),
+                cache_dir=str(CONFIG_DIR / "tokenizer_cache"),
             )
         except Exception:
             # Fallback: tiktoken with cl100k if HF isn't available offline

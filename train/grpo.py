@@ -607,7 +607,8 @@ def main():
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).parent.parent))
         from ssm.epichat_rag import EpiChatRAG
-        epichat_rag = EpiChatRAG("/home/me/EpiChat")
+        from ssm.paths import EPICHAT_DIR
+        epichat_rag = EpiChatRAG(str(EPICHAT_DIR))
         print(f"[INFO] EpiChat RAG loaded: {epichat_rag.stats}", flush=True)
     except Exception as e:
         print(f"[INFO] EpiChat RAG not available: {e}", flush=True)

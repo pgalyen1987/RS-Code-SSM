@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Download Qwen3.5-35B-A3B Q4_K_M teacher model (~20GB)
 # Repo: unsloth/Qwen3.5-35B-A3B-GGUF
-# Saves to ~/.ssm/models/
+# Saves to MODEL_DIR (default: ~/.ssm/models or $WORK_DIR/models on Kaggle)
 
 set -e
-MODEL_DIR="$HOME/.ssm/models"
+[ -f "$(dirname "$0")/../scripts/env.sh" ] && source "$(dirname "$0")/../scripts/env.sh"
+MODEL_DIR="${MODEL_DIR:-$HOME/.ssm/models}"
 mkdir -p "$MODEL_DIR"
 
-source "$(dirname "$0")/../.venv/bin/activate"
+[ -f "$(dirname "$0")/../.venv/bin/activate" ] && source "$(dirname "$0")/../.venv/bin/activate"
 
 echo "=== Downloading Qwen3.5-35B-A3B Q4_K_M (teacher) ==="
 echo "Target: $MODEL_DIR"
@@ -22,10 +23,10 @@ if command -v hf &>/dev/null; then
     --local-dir "$MODEL_DIR"
 else
   # Fallback: huggingface_hub Python
-  python - <<'EOF'
+  MODEL_DIR="$MODEL_DIR" python - <<'EOF'
 import os
 from huggingface_hub import hf_hub_download
-dest = os.path.expanduser("~/.ssm/models")
+dest = os.environ.get("MODEL_DIR", os.path.expanduser("~/.ssm/models"))
 os.makedirs(dest, exist_ok=True)
 path = hf_hub_download(
     repo_id="unsloth/Qwen3.5-35B-A3B-GGUF",

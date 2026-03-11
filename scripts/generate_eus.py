@@ -13,7 +13,7 @@ Three-pronged approach:
   3. Dedup & save every 50 new EUs
 
 Run overnight:
-    source /home/me/SSM/.venv/bin/activate
+    source scripts/env.sh  # or set EPICHAT_DIR, REPO_ROOT
     python scripts/generate_eus.py 2>&1 | tee logs/eu_expansion.log
 """
 
@@ -23,8 +23,11 @@ import re
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
-EPICHAT_DIR = "/home/me/EpiChat"
+# EPICHAT_DIR from env, or repo/epichat
+_repo = Path(__file__).resolve().parent.parent
+EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(_repo / "epichat")
 sys.path.insert(0, EPICHAT_DIR)
 
 from core.knowledge_graph import KnowledgeGraph
@@ -872,7 +875,8 @@ def main():
     ollama_ok = check_ollama_running()
     if not ollama_ok:
         print("  [WARN] Ollama not running on :11434. Trying to start...")
-        os.system("ollama serve > /tmp/ollama.log 2>&1 &")
+        ollama_log = os.environ.get("TMP_DIR", "/tmp") + "/ollama.log"
+        os.system(f"ollama serve > {ollama_log} 2>&1 &")
         time.sleep(5)
         ollama_ok = check_ollama_running()
 
@@ -937,10 +941,11 @@ def main():
     print(f"Total EU count: {len(kg.units)} (added {total_added} in this run, started at {start_count})")
 
     print("\n=== Re-exporting training traces ===")
+    repo = os.environ.get("REPO_ROOT", str(_repo))
     os.system(
-        "cd /home/me/SSM && source .venv/bin/activate 2>/dev/null; "
-        "python -u -m train.epichat_export "
-        "--epichat-dir /home/me/EpiChat "
+        f"cd {repo} && (source .venv/bin/activate 2>/dev/null || true) && "
+        f"python -u -m train.epichat_export "
+        f"--epichat-dir {EPICHAT_DIR} "
         "--output data/epichat_traces.jsonl "
         "--min-confidence 0.4"
     )

@@ -3,18 +3,20 @@ Expand EpiChat's knowledge graph with additional Wikipedia topics.
 
 Adds ~100 more high-quality CS/ML/systems topics to the existing 350 EUs.
 Run from the SSM directory:
-    source .venv/bin/activate
+    source scripts/env.sh  # or set EPICHAT_DIR, REPO_ROOT
     python scripts/expand_epichat.py
 
 Target: 1000+ EUs covering ML, systems, databases, advanced algorithms,
         compilers, concurrency, distributed systems, and more.
 """
 
-import sys
 import os
+import sys
 
-# Add EpiChat to path
-EPICHAT_DIR = "/home/me/EpiChat"
+# Add EpiChat to path (EPICHAT_DIR env or default)
+EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(
+    (__import__("pathlib").Path(__file__).resolve().parent.parent / "epichat")
+)
 sys.path.insert(0, EPICHAT_DIR)
 
 from core.knowledge_graph import KnowledgeGraph
@@ -200,10 +202,11 @@ def main():
 
     # Also re-export training traces
     print("\nRe-exporting training traces...")
+    repo = os.environ.get("REPO_ROOT", str(__import__("pathlib").Path(__file__).resolve().parent.parent))
     os.system(
-        "cd /home/me/SSM && source .venv/bin/activate 2>/dev/null; "
-        "python -u -m train.epichat_export "
-        "--epichat-dir /home/me/EpiChat "
+        f"cd {repo} && (source .venv/bin/activate 2>/dev/null || true) && "
+        f"python -u -m train.epichat_export "
+        f"--epichat-dir {EPICHAT_DIR} "
         "--output data/epichat_traces.jsonl "
         "--min-confidence 0.4"
     )
