@@ -24,6 +24,7 @@ Usage:
 import argparse
 import json
 import sys
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -359,7 +360,7 @@ def main():
     parser = argparse.ArgumentParser(description="Export EpiChat knowledge as SFT training traces")
     parser.add_argument(
         "--epichat-dir",
-        default=os.environ.get("EPICHAT_DIR", ""),
+        default= os.environ.get("EPICHAT_DIR", ""),
         help="EpiChat root directory (default: EPICHAT_DIR env)",
     )
     parser.add_argument("--output", default="data/epichat_traces.jsonl", help="Output JSONL file")
