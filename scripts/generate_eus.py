@@ -968,8 +968,12 @@ def main():
          "--min-confidence", "0.4"],
         cwd=os.environ.get("REPO_ROOT", str(_repo)),
         env={**os.environ, "EPICHAT_DIR": EPICHAT_DIR, "REPO_ROOT": os.environ.get("REPO_ROOT", str(_repo))},
+        capture_output=True,
+        text=True,
     )
     print(f"Trace export exit code: {result.returncode}", flush=True)
+    if result.returncode != 0 and result.stderr:
+        print(result.stderr, file=sys.stderr, flush=True)
     print("Done.", flush=True)
 
 

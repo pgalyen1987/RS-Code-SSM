@@ -33,9 +33,11 @@ from typing import Optional
 
 def load_epichat_units(epichat_dir: Path) -> list[dict]:
     """Load serialized EUs from EpiChat's episteme_data/units.json."""
+    epichat_dir = Path(epichat_dir).resolve()
     units_path = epichat_dir / "episteme_data" / "units.json"
     if not units_path.exists():
         print(f"[ERROR] units.json not found at {units_path}", file=sys.stderr, flush=True)
+        print(f"[HINT] EPICHAT_DIR={epichat_dir} — ensure generate_eus completed and saved.", file=sys.stderr, flush=True)
         return []
     with open(units_path) as f:
         data = json.load(f)
@@ -360,7 +362,7 @@ def main():
     parser = argparse.ArgumentParser(description="Export EpiChat knowledge as SFT training traces")
     parser.add_argument(
         "--epichat-dir",
-        default= os.environ.get("EPICHAT_DIR", ""),
+        default=os.environ.get("EPICHAT_DIR", ""),
         help="EpiChat root directory (default: EPICHAT_DIR env)",
     )
     parser.add_argument("--output", default="data/epichat_traces.jsonl", help="Output JSONL file")
@@ -369,11 +371,28 @@ def main():
 
     epichat_dir = args.epichat_dir or os.environ.get("EPICHAT_DIR")
     if not epichat_dir:
-        from ssm.paths import EPICHAT_DIR
-        epichat_dir = str(EPICHAT_DIR)
-    n = export(Path(epichat_dir), Path(args.output), args.min_confidence)
+        try:
+            from ssm.paths import EPICHAT_DIR
+            epichat_dir = str(EPICHAT_DIR)
+        except ImportError:
+            print("[ERROR] EPICHAT_DIR not set and ssm.paths unavailable.", file=sys.stderr, flush=True)
+            sys.exit(1)
+
+    output_path = Path(args.output)
+    if not output_path.is_absolute():
+        output_path = Path.cwd() / output_path
+
+    n = export(Path(epichat_dir), output_path, args.min_confidence)
     print(f"[INFO] Total: {n} traces", file=sys.stderr, flush=True)
+    if n == 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(f"[ERROR] Trace export failed: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
