@@ -221,11 +221,11 @@ class EpiChatRAG:
             return False
         try:
             import sys
-            _epichat = str(self._dir)
-            if _epichat not in sys.path:
-                sys.path.insert(0, _epichat)
-            from core.knowledge_graph import KnowledgeGraph
-            from core.epistemic_unit import EpistemicUnit, KnowledgeType
+            _parent = str(self._dir.parent)
+            if _parent not in sys.path:
+                sys.path.insert(0, _parent)
+            from epichat.core.knowledge_graph import KnowledgeGraph
+            from epichat.core.epistemic_unit import EpistemicUnit, KnowledgeType
 
             kg = KnowledgeGraph(str(self._dir / "episteme_data"))
             eu = EpistemicUnit(

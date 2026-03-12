@@ -13,14 +13,16 @@ Target: 1000+ EUs covering ML, systems, databases, advanced algorithms,
 import os
 import sys
 
-# epichat is in-repo at REPO_ROOT/epichat
+# epichat is in-repo at REPO_ROOT/epichat — add REPO_ROOT so "epichat" is importable
 _repo = __import__("pathlib").Path(__file__).resolve().parent.parent
+REPO_ROOT = os.environ.get("REPO_ROOT") or str(_repo)
 EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(_repo / "epichat")
-sys.path.insert(0, EPICHAT_DIR)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
-from core.knowledge_graph import KnowledgeGraph
-from core.epistemic_unit import EpistemicUnit, KnowledgeType, Source
-from seeding.code_seeder import CodeSeeder
+from epichat.core.knowledge_graph import KnowledgeGraph
+from epichat.core.epistemic_unit import EpistemicUnit, KnowledgeType, Source
+from epichat.seeding.code_seeder import CodeSeeder
 
 # ─── Additional topics ────────────────────────────────────────────────────────
 
