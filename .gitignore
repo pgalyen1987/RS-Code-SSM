@@ -33,9 +33,8 @@ logs/
 dist/
 export/
 
-# EpiChat local data (stays on your machine)
+# EpiChat generated data (epichat/ code is in-repo; episteme_data is generated)
 episteme_data/
-epichat/
 
 # Jupyter
 .ipynb_checkpoints/

@@ -13,10 +13,9 @@ Target: 1000+ EUs covering ML, systems, databases, advanced algorithms,
 import os
 import sys
 
-# Add EpiChat to path (EPICHAT_DIR env or default)
-EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(
-    (__import__("pathlib").Path(__file__).resolve().parent.parent / "epichat")
-)
+# epichat is in-repo at REPO_ROOT/epichat
+_repo = __import__("pathlib").Path(__file__).resolve().parent.parent
+EPICHAT_DIR = os.environ.get("EPICHAT_DIR") or str(_repo / "epichat")
 sys.path.insert(0, EPICHAT_DIR)
 
 from core.knowledge_graph import KnowledgeGraph

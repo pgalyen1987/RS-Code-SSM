@@ -7,17 +7,8 @@ DATA_DIR = Path(os.environ.get("DATA_DIR") or REPO_ROOT / "data")
 CHECKPOINT_DIR = Path(os.environ.get("CHECKPOINT_DIR") or REPO_ROOT / "checkpoints")
 WORK_DIR = Path(os.environ.get("WORK_DIR") or (Path("/kaggle/working") if Path("/kaggle").exists() else REPO_ROOT))
 
-# EpiChat knowledge graph (EPICHAT_DIR env, or ../EpiChat, ../epichat, repo/epichat)
-_ep = os.environ.get("EPICHAT_DIR")
-if _ep:
-    EPICHAT_DIR = Path(_ep)
-else:
-    for cand in (REPO_ROOT.parent / "EpiChat", REPO_ROOT.parent / "epichat", REPO_ROOT / "epichat"):
-        if cand.exists():
-            EPICHAT_DIR = cand
-            break
-    else:
-        EPICHAT_DIR = REPO_ROOT / "epichat"
+# EpiChat knowledge graph — in-repo at REPO_ROOT/epichat (override with EPICHAT_DIR env)
+EPICHAT_DIR = Path(os.environ.get("EPICHAT_DIR") or str(REPO_ROOT / "epichat"))
 
 # Model storage (~/.ssm/models or WORK_DIR/models on Kaggle)
 MODEL_DIR = Path(

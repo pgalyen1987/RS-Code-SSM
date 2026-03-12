@@ -220,8 +220,12 @@ class EpiChatRAG:
         if not self._ready or self._index is None:
             return False
         try:
-            from epichat.core.knowledge_graph import KnowledgeGraph
-            from epichat.core.epistemic_unit import EpistemicUnit, KnowledgeType
+            import sys
+            _epichat = str(self._dir)
+            if _epichat not in sys.path:
+                sys.path.insert(0, _epichat)
+            from core.knowledge_graph import KnowledgeGraph
+            from core.epistemic_unit import EpistemicUnit, KnowledgeType
 
             kg = KnowledgeGraph(str(self._dir / "episteme_data"))
             eu = EpistemicUnit(
