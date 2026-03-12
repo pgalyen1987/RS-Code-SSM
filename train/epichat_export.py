@@ -35,7 +35,7 @@ def load_epichat_units(epichat_dir: Path) -> list[dict]:
     """Load serialized EUs from EpiChat's episteme_data/units.json."""
     units_path = epichat_dir / "episteme_data" / "units.json"
     if not units_path.exists():
-        print(f"[ERROR] units.json not found at {units_path}", file=sys.stderr)
+        print(f"[ERROR] units.json not found at {units_path}", file=sys.stderr, flush=True)
         return []
     with open(units_path) as f:
         data = json.load(f)
@@ -303,7 +303,7 @@ def _should_include(eu: dict, min_confidence: float = 0.4) -> bool:
 def export(epichat_dir: Path, output_path: Path, min_confidence: float = 0.4) -> int:
     units = load_epichat_units(epichat_dir)
     if not units:
-        print("[ERROR] No units loaded. Run EpiChat seeding first.", file=sys.stderr)
+        print("[ERROR] No units loaded. Run EpiChat seeding first.", file=sys.stderr, flush=True)
         return 0
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -351,8 +351,8 @@ def export(epichat_dir: Path, output_path: Path, min_confidence: float = 0.4) ->
             if traces_generated:
                 seen_ids.add(eu_id)
 
-    print(f"[DONE] {n_written} training traces written to {output_path}", file=sys.stderr)
-    print(f"       from {len(seen_ids)} unique EpistemicUnits", file=sys.stderr)
+    print(f"[DONE] {n_written} training traces written to {output_path}", file=sys.stderr, flush=True)
+    print(f"       from {len(seen_ids)} unique EpistemicUnits", file=sys.stderr, flush=True)
     return n_written
 
 
@@ -372,7 +372,7 @@ def main():
         from ssm.paths import EPICHAT_DIR
         epichat_dir = str(EPICHAT_DIR)
     n = export(Path(epichat_dir), Path(args.output), args.min_confidence)
-    print(f"[INFO] Total: {n} traces", file=sys.stderr)
+    print(f"[INFO] Total: {n} traces", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

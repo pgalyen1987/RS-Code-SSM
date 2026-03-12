@@ -798,6 +798,9 @@ Respond in EXACTLY this JSON format (no other text):
 
 
 def call_ollama(prompt: str, model: str = "llama3.1:8b", timeout: int = 120) -> str | None:
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    if not host.startswith("http"):
+        host = f"http://{host}"
     try:
         payload = json.dumps({
             "model": model,
@@ -806,7 +809,7 @@ def call_ollama(prompt: str, model: str = "llama3.1:8b", timeout: int = 120) -> 
             "options": {"temperature": 0.3, "num_predict": 600},
         }).encode()
         req = urllib.request.Request(
-            "http://localhost:11434/api/generate",
+            f"{host.rstrip('/')}/api/generate",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -830,8 +833,11 @@ def parse_eu_json(text: str) -> dict | None:
 
 
 def check_ollama_running() -> bool:
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    if not host.startswith("http"):
+        host = f"http://{host}"
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/tags")
         with urllib.request.urlopen(req, timeout=5):
             return True
     except Exception:
@@ -839,8 +845,11 @@ def check_ollama_running() -> bool:
 
 
 def _model_exists(name: str) -> bool:
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    if not host.startswith("http"):
+        host = f"http://{host}"
     try:
-        req = urllib.request.Request("http://localhost:11434/api/tags")
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/tags")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             return any(
@@ -855,35 +864,41 @@ EPICHAT_DATA = os.path.join(EPICHAT_DIR, "episteme_data")
 
 
 def main():
+    # Unbuffered output for real-time progress when run via subprocess (e.g. Kaggle)
+    sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, "reconfigure") else None
+    sys.stderr.reconfigure(line_buffering=True) if hasattr(sys.stderr, "reconfigure") else None
+
     kg = KnowledgeGraph()
     kg.load(EPICHAT_DATA)
     start_count = len(kg.units)
-    print(f"Starting EU count: {start_count}")
-    print(f"Target: 15,000+ EUs\n")
+    print(f"Starting EU count: {start_count}", flush=True)
+    print(f"Target: 15,000+ EUs\n", flush=True)
 
     total_added = 0
 
     # ── Phase 1: Wikipedia scraping ───────────────────────────────────────────
-    print(f"=== Phase 1: Wikipedia scraping ({len(WIKI_TOPICS)} topics) ===")
+    print(f"=== Phase 1: Wikipedia scraping ({len(WIKI_TOPICS)} topics) ===", flush=True)
     seeder = CodeSeeder(kg)
     n = seeder.seed_wikipedia(topics=WIKI_TOPICS, max_sentences=25)
     total_added += n
-    print(f"  Added {n} EUs from Wikipedia. Total: {len(kg.units)}\n")
+    print(f"  Added {n} EUs from Wikipedia. Total: {len(kg.units)}\n", flush=True)
+    print("  [Phase 1] Saving knowledge graph (units.json, faiss.index)...", flush=True)
     kg.save(EPICHAT_DATA)
+    print("  [Phase 1] Save complete.\n", flush=True)
 
     # ── Phase 2: LLM synthesis ────────────────────────────────────────────────
-    print(f"=== Phase 2: LLM synthesis ({len(LLM_CONCEPTS)} concepts) ===")
+    print(f"=== Phase 2: LLM synthesis ({len(LLM_CONCEPTS)} concepts) ===", flush=True)
 
     ollama_ok = check_ollama_running()
     if not ollama_ok:
-        print("  [WARN] Ollama not running on :11434. Trying to start...")
+        print("  [WARN] Ollama not running. Trying to start...", flush=True)
         ollama_log = os.environ.get("TMP_DIR", "/tmp") + "/ollama.log"
         os.system(f"ollama serve > {ollama_log} 2>&1 &")
         time.sleep(5)
         ollama_ok = check_ollama_running()
 
     if not ollama_ok:
-        print("  [SKIP] Ollama not available — skipping LLM synthesis")
+        print("  [SKIP] Ollama not available — skipping LLM synthesis", flush=True)
     else:
         # Pick best available model (prefer deepseek-r1 for quality)
         for candidate in ("deepseek-r1:latest", "llama3.1:8b"):
@@ -892,7 +907,9 @@ def main():
                 break
         else:
             model = "llama3.1:8b"
-        print(f"  Using model: {model}")
+        print(f"  Using model: {model}", flush=True)
+        # Brief wait for Ollama to finish loading model on first request (Kaggle)
+        print("  [INFO] First Ollama call may take 30-60s while model loads...", flush=True)
 
         source = Source(name=f"LLM-synthesized ({model})", reliability_score=0.82)
         n_llm = 0
@@ -926,32 +943,34 @@ def main():
             if kg.add(eu):
                 n_llm += 1
                 total_added += 1
-                print(f"  [{i+1:03d}/{len(LLM_CONCEPTS)}] +1 | {concept[:65]}")
+                print(f"  [{i+1:03d}/{len(LLM_CONCEPTS)}] +1 | {concept[:65]}", flush=True)
             else:
                 n_skip += 1
-                print(f"  [{i+1:03d}/{len(LLM_CONCEPTS)}] dup | {concept[:65]}")
+                print(f"  [{i+1:03d}/{len(LLM_CONCEPTS)}] dup | {concept[:65]}", flush=True)
 
             if n_llm > 0 and n_llm % 50 == 0:
                 kg.save(EPICHAT_DATA)
-                print(f"  [SAVE] {len(kg.units)} total EUs")
+                print(f"  [SAVE] {len(kg.units)} total EUs", flush=True)
 
-        print(f"\n  LLM synthesis: {n_llm} added, {n_skip} skipped")
+        print(f"\n  LLM synthesis: {n_llm} added, {n_skip} skipped", flush=True)
 
     # ── Final save & re-export traces ─────────────────────────────────────────
-    print(f"\n=== Final save ===")
+    print(f"\n=== Final save ===", flush=True)
     kg.save(EPICHAT_DATA)
-    print(f"Total EU count: {len(kg.units)} (added {total_added} in this run, started at {start_count})")
+    print(f"Total EU count: {len(kg.units)} (added {total_added} in this run, started at {start_count})", flush=True)
 
-    print("\n=== Re-exporting training traces ===")
-    repo = os.environ.get("REPO_ROOT", str(_repo))
-    os.system(
-        f"cd {repo} && (source .venv/bin/activate 2>/dev/null || true) && "
-        f"python -u -m train.epichat_export "
-        f"--epichat-dir {EPICHAT_DIR} "
-        "--output data/epichat_traces.jsonl "
-        "--min-confidence 0.4"
+    print("\n=== Re-exporting training traces ===", flush=True)
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-u", "-m", "train.epichat_export",
+         "--epichat-dir", EPICHAT_DIR,
+         "--output", "data/epichat_traces.jsonl",
+         "--min-confidence", "0.4"],
+        cwd=os.environ.get("REPO_ROOT", str(_repo)),
+        env={**os.environ, "EPICHAT_DIR": EPICHAT_DIR, "REPO_ROOT": os.environ.get("REPO_ROOT", str(_repo))},
     )
-    print("Done.")
+    print(f"Trace export exit code: {result.returncode}", flush=True)
+    print("Done.", flush=True)
 
 
 if __name__ == "__main__":

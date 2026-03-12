@@ -177,7 +177,7 @@ class CodeSeeder:
                     if self.kg.add(eu):
                         total += 1
 
-        print(f"[Wiki-CS] {total} EUs from Wikipedia CS articles")
+        print(f"[Wiki-CS] {total} EUs from Wikipedia CS articles", flush=True)
         return total
 
     # ------------------------------------------------------------------ #

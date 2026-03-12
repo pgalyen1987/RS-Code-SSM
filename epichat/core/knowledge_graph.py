@@ -21,7 +21,7 @@ class KnowledgeGraph:
     MIN_CONFIDENCE = 0.30
 
     def __init__(self, embedding_model: str = "all-MiniLM-L6-v2"):
-        print("[KG] Initializing Knowledge Graph...")
+        print("[KG] Initializing Knowledge Graph...", flush=True)
 
         self.graph = nx.DiGraph()
         self.units: Dict[str, EpistemicUnit] = {}
@@ -48,7 +48,7 @@ class KnowledgeGraph:
     def embedder(self):
         if self._embedder is None:
             from sentence_transformers import SentenceTransformer
-            print("[KG] Loading embedding model (first use)...")
+            print("[KG] Loading embedding model (first use)...", flush=True)
             self._embedder = SentenceTransformer(self._embedding_model_name)
         return self._embedder
 
@@ -211,9 +211,10 @@ class KnowledgeGraph:
         path = path or self.SAVE_PATH
         os.makedirs(path, exist_ok=True)
 
+        # Use indent=None for faster write (Kaggle); indent=2 bloats 10k+ units
         units_data = {uid: eu.to_dict() for uid, eu in self.units.items()}
         with open(f"{path}/units.json", "w") as f:
-            json.dump(units_data, f, indent=2)
+            json.dump(units_data, f, indent=None, separators=(",", ":"))
 
         with open(f"{path}/graph.pkl", "wb") as f:
             pickle.dump(self.graph, f)
@@ -224,12 +225,12 @@ class KnowledgeGraph:
         with open(f"{path}/faiss_map.json", "w") as f:
             json.dump(self.faiss_id_map, f)
 
-        print(f"[KG] Saved {len(self.units)} units to {path}/")
+        print(f"[KG] Saved {len(self.units)} units to {path}/", flush=True)
 
     def load(self, path: str = None) -> bool:
         path = path or self.SAVE_PATH
         if not os.path.exists(f"{path}/units.json"):
-            print("[KG] No saved graph found.")
+            print("[KG] No saved graph found.", flush=True)
             return False
 
         with open(f"{path}/units.json", "r") as f:
@@ -249,5 +250,5 @@ class KnowledgeGraph:
         for uid, eu in self.units.items():
             self.domain_index.setdefault(eu.domain, []).append(uid)
 
-        print(f"[KG] Loaded {len(self.units)} units from {path}/")
+        print(f"[KG] Loaded {len(self.units)} units from {path}/", flush=True)
         return True

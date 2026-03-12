@@ -184,32 +184,36 @@ EXTRA_TOPICS = [
 
 
 def main():
-    kg = KnowledgeGraph(os.path.join(EPICHAT_DIR, "episteme_data"))
-    print(f"Current EU count: {len(kg.units)}")
+    epichat_data = os.path.join(EPICHAT_DIR, "episteme_data")
+    kg = KnowledgeGraph()
+    kg.load(epichat_data)
+    print(f"Current EU count: {len(kg.units)}", flush=True)
 
     seeder = CodeSeeder(kg)
 
-    print(f"\nSeeding {len(EXTRA_TOPICS)} additional Wikipedia topics...")
+    print(f"\nSeeding {len(EXTRA_TOPICS)} additional Wikipedia topics...", flush=True)
     n = seeder.seed_wikipedia(
         topics=EXTRA_TOPICS,
         max_sentences=25,
     )
-    print(f"\nAdded {n} new EUs")
-    print(f"Total EU count: {len(kg.units)}")
+    print(f"\nAdded {n} new EUs", flush=True)
+    print(f"Total EU count: {len(kg.units)}", flush=True)
 
-    print("\nSaving...")
-    kg.save()
-    print("Done.")
+    print("\nSaving...", flush=True)
+    kg.save(epichat_data)
+    print("Done.", flush=True)
 
-    # Also re-export training traces
-    print("\nRe-exporting training traces...")
+    # Re-export training traces (Kaggle: use subprocess, no .venv)
+    print("\nRe-exporting training traces...", flush=True)
+    import subprocess
     repo = os.environ.get("REPO_ROOT", str(__import__("pathlib").Path(__file__).resolve().parent.parent))
-    os.system(
-        f"cd {repo} && (source .venv/bin/activate 2>/dev/null || true) && "
-        f"python -u -m train.epichat_export "
-        f"--epichat-dir {EPICHAT_DIR} "
-        "--output data/epichat_traces.jsonl "
-        "--min-confidence 0.4"
+    subprocess.run(
+        [__import__("sys").executable, "-u", "-m", "train.epichat_export",
+         "--epichat-dir", EPICHAT_DIR,
+         "--output", "data/epichat_traces.jsonl",
+         "--min-confidence", "0.4"],
+        cwd=repo,
+        env={**os.environ, "EPICHAT_DIR": EPICHAT_DIR, "REPO_ROOT": repo},
     )
 
 
