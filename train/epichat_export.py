@@ -63,8 +63,21 @@ Format:
 
 
 def _s(v) -> str:
-    """Safe string: converts None → ''."""
-    return (v or "").strip()
+    """Safe string: converts None → '', extracts from dict/list when LLM returns nested objects."""
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        # Prefer common keys for complexity/guidance fields
+        for key in ("time", "value", "complexity", "text", "description"):
+            if key in v and isinstance(v[key], str):
+                return v[key].strip()
+        # Fallback: join string values
+        parts = [str(x).strip() for x in v.values() if isinstance(x, str) and x.strip()]
+        return " ".join(parts) if parts else ""
+    if isinstance(v, list):
+        parts = [str(x).strip() for x in v if isinstance(x, str) and str(x).strip()]
+        return " ".join(parts) if parts else ""
+    return str(v).strip()
 
 
 def build_algorithm_trace(eu: dict) -> Optional[dict]:
