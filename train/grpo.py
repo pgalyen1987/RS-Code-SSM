@@ -17,13 +17,15 @@ Usage:
         --traces data/reasoning_traces.jsonl \
         --checkpoint checkpoints/sft/best.pt \
         --output-dir checkpoints/grpo \
-        --model-size 700m
+        --model-size 700m \
+        --languages python,cpp,javascript,java,go,kotlin
 """
 
 import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,8 +91,17 @@ class GRPODataset(Dataset):
                 if not line:
                     continue
                 rec = json.loads(line)
-                # Only keep records with test code (needed for verifiable reward)
-                if rec.get("test_code") or rec.get("source") == "codealpaca":
+                # Keep records with test code, known codealpaca source, or any
+                # record that has at least a prompt (multilingual datasets may
+                # not always supply test_code).
+                if (
+                    rec.get("test_code")
+                    or rec.get("source") == "codealpaca"
+                    or rec.get("prompt")
+                ):
+                    # Default language to "python" when not specified
+                    if "language" not in rec:
+                        rec["language"] = "python"
                     self.records.append(rec)
 
     def __len__(self):
@@ -102,7 +113,8 @@ class GRPODataset(Dataset):
 
 # ─── Code execution reward ────────────────────────────────────────────────────
 
-EXEC_HARNESS = """\
+# Python harness (unchanged)
+_PYTHON_HARNESS = """\
 import sys, traceback
 try:
 {code_indented}
@@ -113,27 +125,48 @@ except Exception as e:
     sys.exit(1)
 """
 
+# Per-language runner specifications
+LANGUAGE_RUNNERS = {
+    "python": {
+        "fence": "python",
+        "ext": ".py",
+    },
+    "cpp": {
+        "fence": "cpp",
+        "ext": ".cpp",
+    },
+    "java": {
+        "fence": "java",
+        "ext": ".java",
+    },
+    "javascript": {
+        "fence": "javascript",
+        "ext": ".js",
+    },
+    "go": {
+        "fence": "go",
+        "ext": ".go",
+    },
+    "kotlin": {
+        "fence": "kotlin",
+        "ext": ".kt",
+    },
+}
+
 
 def indent(s: str, spaces: int = 4) -> str:
     pad = " " * spaces
     return "\n".join(pad + line for line in s.splitlines())
 
 
-def execute_solution(solution: str, test_code: str, timeout: int = 10) -> bool:
-    """Run solution + tests in a subprocess. Returns True if all tests pass."""
-    if not test_code.strip():
-        # No test harness — reward based on format only
-        return False
-
-    harness = EXEC_HARNESS.format(
+def _run_python(solution: str, test_code: str, timeout: int) -> bool:
+    harness = _PYTHON_HARNESS.format(
         code_indented=indent(solution),
         test_indented=indent(test_code),
     )
-
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
         f.write(harness)
         fname = f.name
-
     try:
         result = subprocess.run(
             [sys.executable, fname],
@@ -141,17 +174,217 @@ def execute_solution(solution: str, test_code: str, timeout: int = 10) -> bool:
             text=True,
             timeout=timeout,
         )
-        passed = result.returncode == 0 and "PASS" in result.stdout
-        return passed
-    except subprocess.TimeoutExpired:
-        return False
-    except Exception:
+        return result.returncode == 0 and "PASS" in result.stdout
+    except (subprocess.TimeoutExpired, Exception):
         return False
     finally:
         try:
             os.unlink(fname)
         except OSError:
             pass
+
+
+def _run_cpp(solution: str, test_code: str, timeout: int) -> bool:
+    src = f"#include <bits/stdc++.h>\nusing namespace std;\n\n{solution}\n\nint main() {{\n{indent(test_code)}\n    return 0;\n}}\n"
+    src_path = "/tmp/prog.cpp"
+    bin_path = "/tmp/prog_cpp"
+    try:
+        with open(src_path, "w") as f:
+            f.write(src)
+        compile_result = subprocess.run(
+            ["g++", "-std=c++17", "-o", bin_path, src_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if compile_result.returncode != 0:
+            return False
+        run_result = subprocess.run(
+            [bin_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return run_result.returncode == 0 and "PASS" in run_result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return False
+    finally:
+        for p in (src_path, bin_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
+def _run_java(solution: str, test_code: str, timeout: int) -> bool:
+    src = (
+        f"public class SolutionTest {{\n"
+        f"{indent(solution)}\n\n"
+        f"    public static void main(String[] args) throws Exception {{\n"
+        f"{indent(test_code, 8)}\n"
+        f"    }}\n"
+        f"}}\n"
+    )
+    src_path = "/tmp/SolutionTest.java"
+    out_dir = "/tmp/java_out"
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(src_path, "w") as f:
+            f.write(src)
+        compile_result = subprocess.run(
+            ["javac", src_path, "-d", out_dir],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if compile_result.returncode != 0:
+            return False
+        run_result = subprocess.run(
+            ["java", "-cp", out_dir, "SolutionTest"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return run_result.returncode == 0 and "PASS" in run_result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return False
+    finally:
+        try:
+            os.unlink(src_path)
+        except OSError:
+            pass
+
+
+def _run_javascript(solution: str, test_code: str, timeout: int) -> bool:
+    src = (
+        f"try {{\n"
+        f"{indent(solution)}\n"
+        f"{indent(test_code)}\n"
+        f'    console.log("PASS");\n'
+        f"}} catch (e) {{\n"
+        f'    console.log("FAIL: " + e.message);\n'
+        f"    process.exit(1);\n"
+        f"}}\n"
+    )
+    src_path = "/tmp/prog.js"
+    try:
+        with open(src_path, "w") as f:
+            f.write(src)
+        result = subprocess.run(
+            ["node", src_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0 and "PASS" in result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return False
+    finally:
+        try:
+            os.unlink(src_path)
+        except OSError:
+            pass
+
+
+def _run_go(solution: str, test_code: str, timeout: int) -> bool:
+    src = (
+        f"package main\n\nimport \"fmt\"\n\n"
+        f"{solution}\n\n"
+        f"func main() {{\n"
+        f"{indent(test_code)}\n"
+        f'    fmt.Println("PASS")\n'
+        f"}}\n"
+    )
+    src_path = "/tmp/prog.go"
+    try:
+        with open(src_path, "w") as f:
+            f.write(src)
+        result = subprocess.run(
+            ["go", "run", src_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.returncode == 0 and "PASS" in result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return False
+    finally:
+        try:
+            os.unlink(src_path)
+        except OSError:
+            pass
+
+
+def _run_kotlin(solution: str, test_code: str, timeout: int) -> bool:
+    if not shutil.which("kotlinc"):
+        return False
+    src = (
+        f"{solution}\n\n"
+        f"fun main() {{\n"
+        f"{indent(test_code)}\n"
+        f'    println("PASS")\n'
+        f"}}\n"
+    )
+    src_path = "/tmp/prog.kt"
+    jar_path = "/tmp/prog.jar"
+    try:
+        with open(src_path, "w") as f:
+            f.write(src)
+        compile_result = subprocess.run(
+            ["kotlinc", src_path, "-include-runtime", "-d", jar_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout * 3,  # kotlinc is slow to start
+            stderr=subprocess.DEVNULL,
+        )
+        if compile_result.returncode != 0:
+            return False
+        run_result = subprocess.run(
+            ["java", "-jar", jar_path],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return run_result.returncode == 0 and "PASS" in run_result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+        return False
+    finally:
+        for p in (src_path, jar_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
+_LANGUAGE_DISPATCH = {
+    "python": _run_python,
+    "cpp": _run_cpp,
+    "c++": _run_cpp,
+    "java": _run_java,
+    "javascript": _run_javascript,
+    "js": _run_javascript,
+    "go": _run_go,
+    "kotlin": _run_kotlin,
+}
+
+
+def execute_solution(
+    solution: str,
+    test_code: str,
+    language: str = "python",
+    timeout: int = 10,
+) -> bool:
+    """
+    Run solution + tests in a subprocess for the given language.
+    Returns True if all tests pass.
+    Defaults to Python if language is not specified or unrecognised.
+    """
+    if not test_code.strip():
+        # No test harness — reward based on format only
+        return False
+
+    runner = _LANGUAGE_DISPATCH.get(language.lower(), _run_python)
+    return runner(solution, test_code, timeout)
 
 
 def compute_reward(
@@ -161,6 +394,7 @@ def compute_reward(
     cfg: GRPOConfig,
     epichat_rag=None,
     problem_prompt: str = "",
+    language: str = "python",
 ) -> float:
     """
     Compute scalar reward for a single rollout.
@@ -174,7 +408,7 @@ def compute_reward(
 
     # Primary: code correctness (binary)
     if test_code:
-        passed = execute_solution(solution, test_code, timeout=cfg.exec_timeout)
+        passed = execute_solution(solution, test_code, language=language, timeout=cfg.exec_timeout)
         r += float(passed)
 
     # Format bonus
@@ -206,35 +440,100 @@ def compute_reward(
 
 # ─── Rollout generation ───────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """\
-You are an expert Python programmer. Think carefully step by step before writing code.
-Use <think> tags to show your reasoning, then provide the final solution.
-Format:
-<think>
-[your chain-of-thought reasoning here]
-</think>
-```python
-[your solution here]
-```"""
+def build_system_prompt(language: str = "python") -> str:
+    """Return a language-specific system prompt."""
+    lang = language.lower()
+    if lang in ("python",):
+        fence = "python"
+        expert = "Python"
+    elif lang in ("cpp", "c++"):
+        fence = "cpp"
+        expert = "C++"
+    elif lang in ("java",):
+        fence = "java"
+        expert = "Java"
+    elif lang in ("javascript", "js"):
+        fence = "javascript"
+        expert = "JavaScript"
+    elif lang in ("go",):
+        fence = "go"
+        expert = "Go"
+    elif lang in ("kotlin",):
+        fence = "kotlin"
+        expert = "Kotlin"
+    else:
+        fence = language
+        expert = language.capitalize()
+
+    return (
+        f"You are an expert {expert} programmer. Think carefully step by step before writing code.\n"
+        f"Use <think> tags to show your reasoning, then provide the final solution.\n"
+        f"Format:\n"
+        f"<think>\n"
+        f"[your chain-of-thought reasoning here]\n"
+        f"</think>\n"
+        f"```{fence}\n"
+        f"[your solution here]\n"
+        f"```"
+    )
 
 
-def build_prompt(problem: dict) -> str:
+def build_prompt(problem: dict, language: str = "python") -> str:
+    lang = language.lower()
+    if lang in ("cpp", "c++"):
+        fence = "cpp"
+    elif lang in ("javascript", "js"):
+        fence = "javascript"
+    else:
+        fence = lang
+
+    system_prompt = build_system_prompt(language)
     user_msg = problem["prompt"]
     if problem.get("test_code"):
-        user_msg += f"\n\nYour solution must pass these tests:\n```python\n{problem['test_code']}\n```"
+        user_msg += f"\n\nYour solution must pass these tests:\n```{fence}\n{problem['test_code']}\n```"
     return (
-        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
+        f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
 
 
-def parse_response(text: str) -> tuple[str, str]:
+def parse_response(text: str, language: str = "python") -> tuple[str, str]:
+    """
+    Extract (thinking, solution) from a model response.
+    Supports language-specific code fences with fallback to any ``` block.
+    """
     think_m = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
     thinking = think_m.group(1).strip() if think_m else ""
-    code_m = re.search(r"```python\s*(.*?)```", text, re.DOTALL)
+
+    # Try language-specific fences first
+    lang = language.lower()
+    fence_variants: list[str] = []
+    if lang in ("python",):
+        fence_variants = ["python"]
+    elif lang in ("cpp", "c++"):
+        fence_variants = ["cpp", "c\\+\\+"]
+    elif lang in ("java",):
+        fence_variants = ["java"]
+    elif lang in ("javascript", "js"):
+        fence_variants = ["javascript", "js"]
+    elif lang in ("go",):
+        fence_variants = ["go"]
+    elif lang in ("kotlin",):
+        fence_variants = ["kotlin"]
+    else:
+        fence_variants = [re.escape(lang)]
+
+    code_m = None
+    for fence in fence_variants:
+        code_m = re.search(rf"```{fence}\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+        if code_m:
+            break
+
+    # Fallback: any ``` block
     if not code_m:
         code_m = re.search(r"```\s*(.*?)```", text, re.DOTALL)
+
     solution = code_m.group(1).strip() if code_m else ""
     return thinking, solution
 
@@ -257,22 +556,20 @@ def sample_rollouts(
     rollout_logprobs = []
 
     prompt_ids = prompt_ids.to(device)
-    B, L_prompt = prompt_ids.shape
 
     for _ in range(cfg.group_size):
         generated = []
         logprobs = []
 
-        # Reset KV/SSM cache via fresh forward
+        # Reset SSM states via fresh forward
         input_ids = prompt_ids.clone()
-        ssm_states = None
-        kv_cache = None
+        states = None
 
         for step in range(cfg.max_new_tokens):
-            logits, ssm_states, kv_cache = model(
+            logits, _aux_loss, states = model(
                 input_ids if step == 0 else input_ids[:, -1:],
-                ssm_states=ssm_states,
-                kv_cache=kv_cache,
+                states=states,
+                return_states=True,
             )
             next_logits = logits[:, -1, :]  # (1, V)
 
@@ -410,11 +707,13 @@ class GRPOTrainer:
         return 0.5 * (1 + torch.cos(torch.tensor(3.14159 * progress)).item())
 
     def _tokenize_prompt(self, problem: dict) -> torch.Tensor:
-        prompt_text = build_prompt(problem)
+        language = problem.get("language", "python")
+        prompt_text = build_prompt(problem, language=language)
         ids = self.tokenizer.encode(prompt_text, return_tensors="pt")
         return ids  # (1, L)
 
     def train_step(self, problem: dict) -> dict:
+        language = problem.get("language", "python")
         prompt_ids = self._tokenize_prompt(problem)
 
         # 1. Sample G rollouts
@@ -426,10 +725,15 @@ class GRPOTrainer:
         rewards = []
         for gen_ids in rollout_ids:
             text = self.tokenizer.decode(gen_ids.tolist(), skip_special_tokens=False)
-            thinking, solution = parse_response(text)
+            thinking, solution = parse_response(text, language=language)
             r = compute_reward(
-                solution, thinking, problem.get("test_code", ""),
-                self.cfg, self.epichat_rag, problem.get("prompt", "")
+                solution,
+                thinking,
+                problem.get("test_code", ""),
+                self.cfg,
+                self.epichat_rag,
+                problem.get("prompt", ""),
+                language=language,
             )
             rewards.append(r)
 
@@ -552,6 +856,11 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--device", default=None, help="Device: cpu, cuda, cuda:0, etc.")
+    parser.add_argument(
+        "--languages",
+        default="python,cpp,javascript,typescript,java,go,kotlin",
+        help="Comma-separated list of languages to train on (filters dataset records)",
+    )
     args = parser.parse_args()
 
     if args.device:
@@ -561,6 +870,10 @@ def main():
     else:
         device = torch.device("cpu")
     print(f"[INFO] Device: {device}", flush=True)
+
+    # Parse and log requested languages
+    requested_languages = {lang.strip().lower() for lang in args.languages.split(",") if lang.strip()}
+    print(f"[INFO] Languages requested: {sorted(requested_languages)}", flush=True)
 
     model_cfg = ModelConfig700M() if args.model_size == "700m" else ModelConfig3B()
     grpo_cfg = GRPOConfig(
@@ -599,7 +912,27 @@ def main():
     model.enable_gradient_checkpointing()
 
     dataset = GRPODataset(args.traces)
-    print(f"[INFO] Dataset: {len(dataset)} problems", flush=True)
+    print(f"[INFO] Dataset: {len(dataset)} problems (before language filter)", flush=True)
+
+    # Filter dataset to requested languages and log counts per language
+    from collections import Counter
+    lang_counts: Counter = Counter(rec.get("language", "python") for rec in dataset.records)
+    print(f"[INFO] Language distribution in dataset: {dict(lang_counts)}", flush=True)
+
+    # Normalise aliases in dataset records to canonical names (e.g. "js" -> "javascript")
+    _alias_map = {"c++": "cpp", "js": "javascript", "typescript": "javascript"}
+    filtered_records = []
+    for rec in dataset.records:
+        lang = rec.get("language", "python").lower()
+        lang = _alias_map.get(lang, lang)
+        rec["language"] = lang
+        if lang in requested_languages or lang in _alias_map.values():
+            filtered_records.append(rec)
+    dataset.records = filtered_records
+    print(f"[INFO] Dataset after language filter: {len(dataset)} problems", flush=True)
+
+    lang_counts_filtered: Counter = Counter(rec.get("language", "python") for rec in dataset.records)
+    print(f"[INFO] Language distribution after filter: {dict(lang_counts_filtered)}", flush=True)
 
     # Load EpiChat RAG for epistemic reward shaping
     epichat_rag = None

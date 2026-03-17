@@ -110,6 +110,79 @@ for _ in range(n_samples):
 
 ---
 
+## Phase 6: Verifier Model + 98% Effective Pass@8
+
+**Files:**
+- `arch/verifier.py` — VerifierConfig, VerifierConfig100M, VerifierModel (~100M params)
+- `train/train_verifier.py` — training script with hard negatives + binary cross-entropy
+- `ssm/inference.py` — CodingSSMInference with test-time compute + verifier scoring
+
+**Strategy:**
+Generate N candidate solutions, rank them with the verifier, return the highest-scoring one.
+No test execution needed at inference time — the verifier replaces the test runner.
+
+**The math (pass@k formula):**
+```
+pass@k = 1 - (1 - pass@1)^k
+
+pass@1=40%  →  pass@4=87.0%  pass@8=98.3%
+pass@1=50%  →  pass@4=93.8%  pass@8=99.6%
+pass@1=60%  →  pass@4=97.4%  pass@8=99.9%
+```
+
+With Phase 5 targeting 75–80% pass@1, pass@4 already exceeds 99%.
+**Target: 98%+ effective pass@8 on HumanEval-X (all 6 languages)**
+
+**Verifier architecture:**
+- 6-layer transformer encoder, d_model=512, 8 heads → ~100M params
+- Input: `[problem] <sep> [solution]` concatenated, max 1024 tokens
+- Output: sigmoid score ∈ (0, 1) — probability solution is correct
+- Training: positive = verified solutions from all_traces.jsonl; hard negatives = corrupted/truncated solutions
+- Loss: binary cross-entropy
+
+**Train the verifier:**
+```bash
+source .venv/bin/activate
+python -m train.train_verifier \
+    --traces data/all_traces.jsonl \
+    --output-dir checkpoints/verifier \
+    --epochs 5 \
+    --device cuda
+```
+
+**Use at inference:**
+```python
+from ssm.inference import CodingSSMInference
+
+engine = CodingSSMInference.from_checkpoint(
+    'checkpoints/grpo/best.pt',
+    verifier_path='checkpoints/verifier/verifier_best.pt',  # optional
+)
+result = engine.solve(
+    prompt="Write a function that reverses a string",
+    language='python',
+    n_samples=8,
+    use_verifier=True,   # rank by verifier score instead of test execution
+)
+print(f"Solution: {result.solution}")
+print(f"Verifier score: {result.verifier_score:.3f}")
+print(f"Pass rate: {result.pass_rate:.1%}")
+```
+
+**Kaggle notebook:** Add Cell 7b to `notebooks/kaggle_train.ipynb` after GRPO:
+```python
+subprocess.run([sys.executable, '-m', 'train.train_verifier',
+    '--traces', traces, '--output-dir', 'checkpoints/verifier',
+    '--device', DEVICE], check=True)
+```
+
+**Expected impact:** Enables **98%+ effective pass@8** across all 6 languages (Python, C++, Java, JS, Go, Kotlin)
+at only 75–80% base pass@1. The verifier also allows laptop deployment without a test runner.
+
+**Status:** 🔲 Not started (blocked on Phase 5) — code complete, needs training
+
+---
+
 ## Current State (as of 2026-03-17)
 
 | Component | Status |
@@ -119,20 +192,31 @@ for _ in range(n_samples):
 | OCR2 reasoning traces (5K) | ✅ In `data/all_traces.jsonl` |
 | all_traces.jsonl (26K) | ⚠️ Needs upload to HF dataset repo |
 | kaggle_eus.ipynb | ✅ Working |
-| kaggle_traces.ipynb | ✅ Working (resumes, merges, uploads all_traces) |
+| kaggle_traces.ipynb | ✅ Working (multilingual, resumes, merges, uploads) |
 | kaggle_train.ipynb | ✅ Working (OOM fixed, auth fixed) |
 | kaggle_pretrain.ipynb | ✅ Ready to run |
+| train/pretrain.py | ✅ Multi-language (8 langs, round-robin, resume) |
+| train/grpo.py | ✅ Multilingual code execution (6 languages) |
+| ssm/inference.py | ✅ Test-time compute + verifier scoring |
+| arch/verifier.py | ✅ 100M verifier model architecture |
+| train/train_verifier.py | ✅ Verifier training script |
 | Phase 1 pretraining | 🔲 Not started |
 | Phase 2 expanded traces | 🔲 Not started |
 
 ## Key Files
 
 ```
-arch/           — Model architecture (Mamba-2, MoE, LoRA, SparseAttn)
-train/          — Training scripts (pretrain.py, sft_reasoning.py, grpo.py)
-scripts/        — Data prep (fetch_ocr2.py, merge_traces.py)
-notebooks/      — Kaggle notebooks (pretrain, eus, traces, train)
-data/           — Local trace files
+arch/                — Model architecture (Mamba-2, MoE, LoRA, SparseAttn)
+arch/verifier.py     — 100M verifier for best-of-N ranking (Phase 6)
+train/               — Training scripts
+  pretrain.py        — Phase 1: multi-language code pretraining
+  sft_reasoning.py   — Phase 3: SFT on reasoning traces
+  grpo.py            — Phase 4: GRPO with multilingual code execution
+  train_verifier.py  — Phase 6: verifier model training
+ssm/inference.py     — Inference with test-time compute + verifier
+scripts/             — Data prep (fetch_ocr2.py, merge_traces.py)
+notebooks/           — Kaggle notebooks (pretrain, eus, traces, train)
+data/                — Local trace files
 ```
 
 ## HuggingFace Repos

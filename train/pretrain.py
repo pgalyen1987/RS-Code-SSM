@@ -1,8 +1,11 @@
 """
-Phase 1 pretraining on Python code from The Stack / GitHub Code.
+Phase 1 pretraining on multi-language code from The Stack / GitHub Code.
 
 Streams data directly from HuggingFace — no local data required.
 Supports resuming across multiple Kaggle sessions.
+
+Languages: Python, C++, JavaScript, TypeScript, Java, Go, Rust, Kotlin
+           (round-robin interleaving for balanced representation)
 
 Usage:
     python -m train.pretrain \
@@ -35,56 +38,101 @@ from arch.config import ModelConfig700M, ModelConfig3B
 
 # ─── Data streaming ──────────────────────────────────────────────────────────
 
-def _iter_the_stack(tokenizer) -> Iterator[list[int]]:
-    """Stream Python code from bigcode/the-stack."""
+# Languages to train on — round-robin interleaved for balanced representation.
+# The Stack data_dir names and their comment markers.
+LANGUAGES = [
+    ("python",     "data/python",      "# Python\n"),
+    ("kotlin",     "data/kotlin",      "// Kotlin\n"),
+    ("cpp",        "data/c++",         "// C++\n"),
+    ("javascript", "data/javascript",  "// JavaScript\n"),
+    ("typescript", "data/typescript",  "// TypeScript\n"),
+    ("java",       "data/java",        "// Java\n"),
+    ("go",         "data/go",          "// Go\n"),
+    ("rust",       "data/rust",        "// Rust\n"),
+]
+
+
+def _iter_the_stack_lang(tokenizer, lang_name: str, data_dir: str, marker: str) -> Iterator[list[int]]:
+    """Stream one language from bigcode/the-stack with a language marker prefix."""
     from datasets import load_dataset
     ds = load_dataset(
         "bigcode/the-stack",
-        data_dir="data/python",
+        data_dir=data_dir,
         split="train",
         streaming=True,
         trust_remote_code=True,
     )
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
     for sample in ds:
         content = sample.get("content", "") or ""
         if not content.strip():
             continue
         ids = tokenizer.encode(content, add_special_tokens=False)
         if ids:
-            yield ids
+            yield marker_ids + ids
 
 
-def _iter_github_code(tokenizer) -> Iterator[list[int]]:
-    """Stream Python code from codeparrot/github-code (fallback)."""
+def _iter_github_code_lang(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
+    """Fallback: stream one language from codeparrot/github-code."""
     from datasets import load_dataset
+    # Map our names to codeparrot language strings
+    lang_map = {
+        "python": "Python", "kotlin": "Kotlin", "cpp": "C++",
+        "javascript": "JavaScript", "typescript": "TypeScript",
+        "java": "Java", "go": "Go", "rust": "Rust",
+    }
+    gh_lang = lang_map.get(lang_name, lang_name)
     ds = load_dataset(
         "codeparrot/github-code",
-        streaming=True,
-        split="train",
-        trust_remote_code=True,
-        filters=[("language", "Python")],
+        streaming=True, split="train", trust_remote_code=True,
+        filters=[("language", gh_lang)],
     )
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
     for sample in ds:
         content = sample.get("code", "") or ""
         if not content.strip():
             continue
         ids = tokenizer.encode(content, add_special_tokens=False)
         if ids:
-            yield ids
+            yield marker_ids + ids
 
 
-def make_token_stream(tokenizer) -> Iterator[list[int]]:
-    """Try the-stack first; fall back to github-code."""
+def _make_lang_stream(tokenizer, lang_name: str, data_dir: str, marker: str) -> Iterator[list[int]]:
+    """Try the-stack for one language; fall back to github-code."""
     try:
-        print("[DATA] Trying bigcode/the-stack (language=Python)...", flush=True)
-        gen = _iter_the_stack(tokenizer)
-        # Peek to confirm it works
-        first = next(gen)
+        gen = _iter_the_stack_lang(tokenizer, lang_name, data_dir, marker)
+        first = next(gen)   # peek to confirm
         yield first
         yield from gen
     except Exception as e:
-        print(f"[DATA] the-stack failed ({e}), falling back to codeparrot/github-code", flush=True)
-        yield from _iter_github_code(tokenizer)
+        print(f"[DATA] the-stack/{lang_name} failed ({e}), trying github-code", flush=True)
+        try:
+            yield from _iter_github_code_lang(tokenizer, lang_name, marker)
+        except Exception as e2:
+            print(f"[DATA] github-code/{lang_name} failed ({e2}), skipping", flush=True)
+
+
+def make_token_stream(tokenizer) -> Iterator[list[int]]:
+    """
+    Round-robin interleave all languages so the model sees balanced multi-language data.
+    Kotlin is listed first to ensure it gets early exposure.
+    """
+    print(f"[DATA] Streaming {len(LANGUAGES)} languages: {[l[0] for l in LANGUAGES]}", flush=True)
+    generators = [
+        _make_lang_stream(tokenizer, name, data_dir, marker)
+        for name, data_dir, marker in LANGUAGES
+    ]
+    # Round-robin: advance each generator one sample at a time
+    active = list(range(len(generators)))
+    while active:
+        next_active = []
+        for i in active:
+            try:
+                yield next(generators[i])
+                next_active.append(i)
+            except StopIteration:
+                print(f"[DATA] {LANGUAGES[i][0]} stream exhausted", flush=True)
+        active = next_active
 
 
 def chunk_stream(token_stream: Iterator[list[int]], seq_len: int) -> Iterator[torch.Tensor]:

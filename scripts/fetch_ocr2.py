@@ -44,10 +44,11 @@ def load_existing(out_path):
     return existing, seen_ids
 
 
-def fetch_ocr2(n, min_pass_rate, seen_ids):
+def fetch_ocr2(n, min_pass_rate, seen_ids, lang='python'):
+    """Fetch from nvidia/OpenCodeReasoning-2. lang: 'python' or 'cpp'."""
     from datasets import load_dataset
-    print(f'Streaming nvidia/OpenCodeReasoning-2 (pass_rate >= {min_pass_rate}, judgement=right)...')
-    ds = load_dataset('nvidia/OpenCodeReasoning-2', split='python', streaming=True)
+    print(f'Streaming nvidia/OpenCodeReasoning-2 [{lang}] (pass_rate >= {min_pass_rate})...')
+    ds = load_dataset('nvidia/OpenCodeReasoning-2', split=lang, streaming=True)
 
     new_traces, scanned = [], 0
     for row in ds:
@@ -58,7 +59,7 @@ def fetch_ocr2(n, min_pass_rate, seen_ids):
             continue
         if float(row.get('pass_rate') or 0) < min_pass_rate:
             continue
-        pid = f"OCR2/{row['id']}"
+        pid = f"OCR2-{lang}/{row['id']}"
         if pid in seen_ids:
             continue
         thinking = strip_think_tags(row.get('r1_generation') or '')
@@ -69,7 +70,8 @@ def fetch_ocr2(n, min_pass_rate, seen_ids):
         seen_ids.add(pid)
         new_traces.append({
             'problem_id': pid,
-            'source':     'opencodereasoning2',
+            'source':     f'opencodereasoning2-{lang}',
+            'language':   lang,
             'prompt':     prompt,
             'thinking':   thinking,
             'solution':   solution,
@@ -80,7 +82,7 @@ def fetch_ocr2(n, min_pass_rate, seen_ids):
         if len(new_traces) >= n:
             break
 
-    print(f'OCR2: collected {len(new_traces)} traces (scanned {scanned:,})')
+    print(f'OCR2-{lang}: collected {len(new_traces)} traces (scanned {scanned:,})')
     return new_traces
 
 
@@ -141,8 +143,10 @@ def main():
     new_traces = []
 
     if args.source in ('ocr2', 'both'):
+        # Fetch both Python and C++ splits (~half each)
         n = args.n if args.source == 'ocr2' else args.n // 2
-        new_traces += fetch_ocr2(n, args.min_pass_rate, seen_ids)
+        new_traces += fetch_ocr2(n // 2, args.min_pass_rate, seen_ids, lang='python')
+        new_traces += fetch_ocr2(n // 2, args.min_pass_rate, seen_ids, lang='cpp')
 
     if args.source in ('codeforces', 'both'):
         n = args.n if args.source == 'codeforces' else args.n // 2
