@@ -50,9 +50,28 @@ class ReasoningTraceDataset(Dataset):
     def __len__(self):
         return len(self.records)
 
+    _SYSTEM = (
+        "You are an expert Python programmer and software engineer. "
+        "Think carefully step by step.\n"
+        "Use <think> tags to show your reasoning, then provide a clear solution.\n"
+        "Format:\n<think>\n[your reasoning]\n</think>\n[solution]"
+    )
+
     def __getitem__(self, idx):
         rec = self.records[idx]
-        text = rec["chatml"]  # pre-formatted ChatML string
+        if "chatml" in rec:
+            text = rec["chatml"]
+        else:
+            # Build ChatML from reasoning trace fields
+            thinking = (rec.get("thinking") or "").strip()
+            solution = (rec.get("solution") or "").strip()
+            prompt   = (rec.get("prompt")   or rec.get("question") or "").strip()
+            assistant = f"<think>\n{thinking}\n</think>\n```python\n{solution}\n```" if thinking else solution
+            text = (
+                f"<|im_start|>system\n{self._SYSTEM}<|im_end|>\n"
+                f"<|im_start|>user\n{prompt}<|im_end|>\n"
+                f"<|im_start|>assistant\n{assistant}<|im_end|>"
+            )
 
         ids = self.tokenizer.encode(text, add_special_tokens=False)
         ids = ids[: self.max_length]
