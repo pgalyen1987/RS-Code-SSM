@@ -15,12 +15,16 @@ Usage:
 import argparse
 import json
 import math
+import os
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
@@ -128,8 +132,9 @@ def train(
     device: torch.device = torch.device("cpu"),
     resume_from: Optional[str] = None,
 ):
+    raw = model.module if isinstance(model, nn.DataParallel) else model
+    raw.enable_gradient_checkpointing()
     model.to(device)
-    model.enable_gradient_checkpointing()
 
     optimizer = Adafactor(
         model.parameters(),
@@ -212,10 +217,11 @@ def train(
 
 def _save(model, optimizer, model_cfg, step, best_loss, output_dir, tag):
     path = output_dir / f"sft_{tag}.pt"
+    raw = model.module if isinstance(model, nn.DataParallel) else model
     torch.save({
         "step": step,
         "best_loss": best_loss,
-        "model_state": model.state_dict(),
+        "model_state": raw.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "model_config": model_cfg.__dict__,
     }, path)
@@ -263,8 +269,17 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[INFO] Model params: {n_params:,} ({n_params/1e9:.2f}B)")
 
+    # Multi-GPU: wrap with DataParallel if multiple GPUs available
+    n_gpus = torch.cuda.device_count() if device.type == "cuda" else 0
+    batch_size = args.batch_size
+    if n_gpus > 1:
+        print(f"[INFO] Using {n_gpus} GPUs via DataParallel")
+        model = nn.DataParallel(model)
+        batch_size = args.batch_size * n_gpus  # scale batch across GPUs
+    print(f"[INFO] Effective batch size: {batch_size} (x{args.grad_accum} grad_accum = {batch_size * args.grad_accum})")
+
     ds = ReasoningTraceDataset(args.traces, tokenizer, max_length=args.max_seq_len)
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0)
 
     train(
         model=model,
