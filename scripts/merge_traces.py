@@ -10,20 +10,20 @@ Sources (in priority order — first seen wins on dedup):
   Reasoning (dedup by problem_id):
     reasoning_traces_r1.jsonl     (top-level, from Kaggle)
     data/reasoning_traces_r1.jsonl
+    data/external_reasoning.jsonl, data/mbpp_reasoning.jsonl
+    data/public_supplement.jsonl  (convert_external_traces supplement)
+    data/kaggle_supplement.jsonl  (convert_external_traces kaggle)
 """
 
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-SYSTEM_PROMPT = (
-    "You are an expert Python programmer. Think step by step before writing code.\n"
-    "Use <think> tags to show your reasoning, then provide the solution.\n"
-    "Format:\n"
-    "<think>\n[your chain-of-thought reasoning]\n</think>\n"
-    "```python\n[your solution]\n```"
-)
+from ssm.reasoning_trace_format import build_chatml_from_parts
 
 EPICHAT_SOURCES = [
     ROOT / "epichat_traces.jsonl",
@@ -34,23 +34,20 @@ EPICHAT_SOURCES = [
 REASONING_SOURCES = [
     ROOT / "reasoning_traces_r1.jsonl",
     ROOT / "data" / "reasoning_traces_r1.jsonl",
+    ROOT / "data" / "external_reasoning.jsonl",  # convert_external_traces humaneval
+    ROOT / "data" / "mbpp_reasoning.jsonl",  # convert_external_traces mbpp
+    ROOT / "data" / "public_supplement.jsonl",  # convert_external_traces supplement
+    ROOT / "data" / "kaggle_supplement.jsonl",  # convert_external_traces kaggle
 ]
 
 OUTPUT = ROOT / "data" / "all_traces.jsonl"
 
 
 def build_reasoning_chatml(rec: dict) -> str:
-    thinking = rec.get("thinking", "").strip()
-    solution = rec.get("solution", "").strip()
-    prompt = rec.get("prompt", "").strip()
-
-    think_block = f"<think>\n{thinking}\n</think>\n" if thinking else ""
-    assistant_content = f"{think_block}```python\n{solution}\n```"
-
-    return (
-        f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
-        f"<|im_start|>user\n{prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n{assistant_content}<|im_end|>"
+    return build_chatml_from_parts(
+        rec.get("prompt", ""),
+        rec.get("thinking", ""),
+        rec.get("solution", ""),
     )
 
 

@@ -11,3 +11,7 @@ rich>=13.7.0
 
 # Model download
 huggingface-hub>=1.0.0
+
+# Data: HF datasets + optional Kaggle downloads for scripts/convert_external_traces.py
+datasets>=2.14.0
+kaggle>=1.6.0
