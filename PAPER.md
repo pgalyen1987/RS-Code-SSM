@@ -286,11 +286,14 @@ Each iteration incorporates more verified training signal, steadily improving pa
 
 **Local machine**: Intel CPU, 64 GB RAM, no GPU. All training uses `torch` CPU with Adafactor optimizer (memory-efficient, no momentum buffers). Typical speeds: SFT ~7 min/optimizer step, GRPO ~15–30 min/step. System sleep is prevented during training via `systemd-inhibit --what=sleep`.
 
-**Kaggle T4 GPU**: For faster iteration, we provide `notebooks/kaggle_train.ipynb`, a self-contained notebook that:
+**Kaggle T4 GPU**: For faster iteration, we provide `notebooks/kaggle_rs_code_ssm_full.ipynb`, a single notebook aligned with §4 that:
 - Clones the GitHub repository
-- Downloads training data from a HuggingFace Dataset
-- Runs SFT (~45 minutes on T4) and GRPO (~6–8 hours on T4)
-- Exports and uploads the trained model to HuggingFace Hub
+- Optionally downloads a pretrain checkpoint and runs optional pretrain (or skips)
+- Downloads training traces from a HuggingFace Dataset
+- Runs SFT (paper §4.2 hyperparameters; optional `--init-checkpoint` from pretrain) and GRPO (§4.3)
+- Optional self-improve (§4.4) and verifier training; exports and uploads the trained model to HuggingFace Hub
+
+Older split notebooks (`kaggle_train.ipynb`, `kaggle_pretrain.ipynb`) remain for reference; prefer the unified notebook.
 
 Kaggle provides 30 hours/week of free T4 GPU access (9h sessions). The full SFT+GRPO pipeline that takes ~5–7 days on CPU completes in ~8 hours on T4. All phases resume automatically from checkpoints.
 

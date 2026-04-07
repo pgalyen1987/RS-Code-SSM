@@ -16,6 +16,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -176,9 +177,14 @@ def train(
             labels = batch["labels"].to(device)
 
             logits, aux_loss = model(input_ids)
+            # DataParallel gathers per-device MoE aux as a vector — reduce to scalar
+            if isinstance(aux_loss, torch.Tensor):
+                aux_loss = aux_loss.mean()
             B, L, V = logits.shape
             loss_ce = F.cross_entropy(logits.view(B * L, V), labels.view(B * L), ignore_index=-100)
             loss = loss_ce + 0.01 * aux_loss
+            if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+                loss = loss.mean()
             loss = loss / grad_accum
             loss.backward()
             accum_loss += loss.item() * grad_accum
@@ -247,8 +253,17 @@ def main():
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument("--save-every", type=int, default=500)
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--init-checkpoint",
+        default=None,
+        help="Load model weights only (e.g. pretrain_checkpoint.pt), fresh optimizer — paper §4 after Phase 1 pretrain",
+    )
     parser.add_argument("--device", default=None, help="Device: cpu, cuda, cuda:0, etc.")
     args = parser.parse_args()
+
+    if args.resume and args.init_checkpoint:
+        print("[ERROR] Use only one of --resume or --init-checkpoint", file=sys.stderr)
+        sys.exit(1)
 
     if args.device:
         device = torch.device(args.device)
@@ -268,6 +283,16 @@ def main():
     model = CodingSSM(model_cfg)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[INFO] Model params: {n_params:,} ({n_params/1e9:.2f}B)")
+
+    if args.init_checkpoint:
+        ckpt = torch.load(args.init_checkpoint, map_location=device)
+        state = ckpt.get("model_state", ckpt)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print(
+            f"[INIT] Loaded weights from {args.init_checkpoint} "
+            f"(missing_keys={len(missing)}, unexpected_keys={len(unexpected)})",
+            flush=True,
+        )
 
     # Multi-GPU: wrap with DataParallel if multiple GPUs available
     n_gpus = torch.cuda.device_count() if device.type == "cuda" else 0
@@ -292,7 +317,7 @@ def main():
         save_every=args.save_every,
         device=device,
         resume_from=args.resume,
-    )
+    )  # --init-checkpoint only loads weights; does not restore optimizer step
 
 
 if __name__ == "__main__":

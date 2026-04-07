@@ -295,9 +295,14 @@ def train(
         targets    = batch[:, 1:]           # (B, seq_len)
 
         logits, aux_loss = model(input_ids)
+        if isinstance(aux_loss, torch.Tensor):
+            aux_loss = aux_loss.mean()
         B, L, V = logits.shape
         loss_ce = F.cross_entropy(logits.reshape(B * L, V), targets.reshape(B * L))
-        loss = (loss_ce + 0.01 * aux_loss) / grad_accum
+        loss = loss_ce + 0.01 * aux_loss
+        if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+            loss = loss.mean()
+        loss = loss / grad_accum
         loss.backward()
 
         tokens_this_batch = B * L

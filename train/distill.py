@@ -231,6 +231,8 @@ class Trainer:
 
                 # Forward pass
                 logits, aux_loss = self.model(input_ids)  # (B, L, V), scalar
+                if isinstance(aux_loss, torch.Tensor):
+                    aux_loss = aux_loss.mean()
 
                 # CE loss (always)
                 l_ce = ce_loss(logits, labels)
@@ -252,6 +254,8 @@ class Trainer:
                     loss = l_ce
 
                 loss = loss + self.config.gamma * aux_loss
+                if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+                    loss = loss.mean()
 
                 # Gradient accumulation
                 loss = loss / self.config.grad_accum_steps
