@@ -10,6 +10,9 @@ Usage:
         --output-dir checkpoints/sft \
         --model-size 700m \
         --epochs 3
+
+    Multi-GPU: pass --data-parallel only if each GPU has enough VRAM; the default is
+    single-GPU training when several devices are visible (avoids OOM on 2×T4).
 """
 
 import argparse
@@ -259,6 +262,15 @@ def main():
         help="Load model weights only (e.g. pretrain_checkpoint.pt), fresh optimizer — paper §4 after Phase 1 pretrain",
     )
     parser.add_argument("--device", default=None, help="Device: cpu, cuda, cuda:0, etc.")
+    parser.add_argument(
+        "--data-parallel",
+        action="store_true",
+        help=(
+            "Use nn.DataParallel when multiple CUDA devices are visible. "
+            "Off by default: each GPU holds a full model copy and gradients reduce on GPU 0, "
+            "which often causes OOM on 2×T4-class GPUs for this model size."
+        ),
+    )
     args = parser.parse_args()
 
     if args.resume and args.init_checkpoint:
@@ -294,13 +306,20 @@ def main():
             flush=True,
         )
 
-    # Multi-GPU: wrap with DataParallel if multiple GPUs available
+    # Multi-GPU: DataParallel is opt-in — it replicates the full model per GPU and
+    # reduces grads on device 0, which spikes memory during backward (common OOM on 2×T4).
     n_gpus = torch.cuda.device_count() if device.type == "cuda" else 0
     batch_size = args.batch_size
-    if n_gpus > 1:
+    if n_gpus > 1 and args.data_parallel:
         print(f"[INFO] Using {n_gpus} GPUs via DataParallel")
         model = nn.DataParallel(model)
-        batch_size = args.batch_size * n_gpus  # scale batch across GPUs
+        batch_size = args.batch_size * n_gpus
+    elif n_gpus > 1:
+        print(
+            f"[INFO] {n_gpus} CUDA devices visible; training on a single GPU "
+            f"({device}). Pass --data-parallel to use DataParallel (needs headroom).",
+            flush=True,
+        )
     print(f"[INFO] Effective batch size: {batch_size} (x{args.grad_accum} grad_accum = {batch_size * args.grad_accum})")
 
     ds = ReasoningTraceDataset(args.traces, tokenizer, max_length=args.max_seq_len)
