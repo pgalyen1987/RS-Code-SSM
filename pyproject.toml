@@ -27,8 +27,6 @@ dependencies = [
     "typer>=0.9.0",
     "rich>=13.7.0",
     "huggingface-hub>=1.0.0",
-    "mamba-ssm>=2.0.0; sys_platform != 'win32'",
-    "causal-conv1d>=1.2.0; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
