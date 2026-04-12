@@ -52,7 +52,7 @@ python scripts/fetch_ocr2.py --n 50000 --source both
 ## Phase 3: SFT on Full Trace Dataset
 
 **Notebook:** `notebooks/kaggle_train.ipynb` (Cells 1–4)
-**Checkpoint:** `checkpoints/sft_v2/sft_best.pt` → uploaded to `pgalyen1987/RS-Code-SSM`
+**Checkpoint:** `checkpoints/sft_v2/sft_best.pt` → uploaded to `pgalyen1987/RS-Code-SSM-1.6B`
 
 Run after Phase 1 (pretrain checkpoint) + Phase 2 (full traces):
 - Initialize from pretrain checkpoint
@@ -188,7 +188,7 @@ at only 75–80% base pass@1. The verifier also allows laptop deployment without
 | Component | Status |
 |---|---|
 | Architecture (Mamba-2 + MoE + LoRA) | ✅ Complete |
-| EpiChat traces (21K) | ✅ On HF at `pgalyen1987/RS-Code-SSM` |
+| EpiChat traces (21K) | ✅ On HF at `pgalyen1987/RS-Code-SSM-1.6B` |
 | OCR2 reasoning traces (5K) | ✅ In `data/all_traces.jsonl` |
 | all_traces.jsonl (26K) | ⚠️ Needs upload to HF dataset repo |
 | kaggle_eus.ipynb | ✅ Working |
@@ -221,5 +221,5 @@ data/                — Local trace files
 
 ## HuggingFace Repos
 
-- Model: `pgalyen1987/RS-Code-SSM` (weights, epichat_traces.jsonl)
+- Model: `pgalyen1987/RS-Code-SSM-1.6B` (weights, epichat_traces.jsonl)
 - Dataset: `pgalyen1987/rs-code-ssm-traces` (all_traces.jsonl, reasoning_traces_r1.jsonl)

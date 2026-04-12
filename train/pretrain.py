@@ -207,7 +207,7 @@ def _upload_to_hf(local_path: Path, hf_token: str):
     try:
         from huggingface_hub import HfApi
         api = HfApi(token=hf_token)
-        repo_id = "pgalyen1987/RS-Code-SSM"
+        repo_id = "pgalyen1987/RS-Code-SSM-1.6B"
         api.upload_file(
             path_or_fileobj=str(local_path),
             path_in_repo="pretrain_checkpoint.pt",
