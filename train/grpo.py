@@ -673,6 +673,9 @@ class GRPOTrainer:
         output_dir: Path,
         device: torch.device,
         epichat_rag=None,
+        hf_repo: Optional[str] = None,
+        hf_path_in_repo: str = "training/grpo_latest.pt",
+        hf_token: Optional[str] = None,
     ):
         self.model = model
         self.ref_model = ref_model
@@ -683,6 +686,9 @@ class GRPOTrainer:
         self.output_dir = output_dir
         self.device = device
         self.epichat_rag = epichat_rag
+        self.hf_repo = hf_repo
+        self.hf_path_in_repo = hf_path_in_repo
+        self.hf_token = hf_token
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -835,6 +841,11 @@ class GRPOTrainer:
         )
         print(f"[SAVE] {path}", flush=True)
 
+        if self.hf_repo and self.hf_path_in_repo:
+            from ssm.hf_checkpoint_sync import upload_checkpoint
+
+            upload_checkpoint(path, self.hf_repo, self.hf_path_in_repo, self.hf_token)
+
         # Keep only last 3 checkpoints (not best)
         ckpts = sorted(self.output_dir.glob("grpo_step_*.pt"), key=lambda p: p.stat().st_mtime)
         for old in ckpts[:-3]:
@@ -861,6 +872,17 @@ def main():
         default="python,cpp,javascript,typescript,java,go,kotlin",
         help="Comma-separated list of languages to train on (filters dataset records)",
     )
+    parser.add_argument(
+        "--hf-repo",
+        default=os.environ.get("HF_MODEL_REPO"),
+        help="HF model repo id (same repo as your weights; not GitHub). Defaults to HF_MODEL_REPO env.",
+    )
+    parser.add_argument(
+        "--hf-grpo-path",
+        default="training/grpo_latest.pt",
+        help="Path inside the model repo for the latest GRPO checkpoint.",
+    )
+    parser.add_argument("--hf-token", default=None, help="Hub token (defaults to HF_TOKEN).")
     args = parser.parse_args()
 
     if args.device:
@@ -895,9 +917,10 @@ def main():
     model = CodingSSM(model_cfg).to(device)
     print(f"[INFO] Model params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
 
+    loaded_ckpt = None
     if args.checkpoint:
-        ckpt = torch.load(args.checkpoint, map_location=device)
-        state = ckpt.get("model_state", ckpt)
+        loaded_ckpt = torch.load(args.checkpoint, map_location=device)
+        state = loaded_ckpt.get("model_state", loaded_ckpt)
         model.load_state_dict(state, strict=False)
         print(f"[INFO] Loaded checkpoint: {args.checkpoint}", flush=True)
 
@@ -946,6 +969,8 @@ def main():
     except Exception as e:
         print(f"[INFO] EpiChat RAG not available: {e}", flush=True)
 
+    hf_tok = args.hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+
     trainer = GRPOTrainer(
         model=model,
         ref_model=ref_model,
@@ -956,7 +981,27 @@ def main():
         output_dir=Path(args.output_dir),
         device=device,
         epichat_rag=epichat_rag,
+        hf_repo=args.hf_repo,
+        hf_path_in_repo=args.hf_grpo_path,
+        hf_token=hf_tok,
     )
+
+    # Resume GRPO optimizer + step when loading a GRPO checkpoint (not plain SFT)
+    if loaded_ckpt and isinstance(loaded_ckpt, dict):
+        ckpt_name = Path(args.checkpoint or "").name
+        is_grpo = "best_reward" in loaded_ckpt or ckpt_name.startswith("grpo_")
+        if is_grpo and loaded_ckpt.get("optimizer_state") is not None:
+            try:
+                trainer.optimizer.load_state_dict(loaded_ckpt["optimizer_state"])
+                trainer.step = int(loaded_ckpt.get("step", 0))
+                trainer.best_reward = float(loaded_ckpt.get("best_reward", float("-inf")))
+                print(
+                    f"[RESUME] GRPO step={trainer.step} best_reward={trainer.best_reward:.4f}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[WARN] Could not restore GRPO trainer state: {e}", flush=True)
+
     trainer.run()
 
 

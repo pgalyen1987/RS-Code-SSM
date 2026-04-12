@@ -358,7 +358,7 @@ def _upload_to_hub(ckpt_path: Path, token: str):
     try:
         from huggingface_hub import HfApi  # type: ignore
 
-        repo_id = "pgalyen1987/RS-Code-SSM-1.6B"
+        repo_id = "pgalyen1987/RS-Code-SSM"
         filename = "verifier.pt"
 
         api = HfApi(token=token)

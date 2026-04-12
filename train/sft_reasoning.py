@@ -135,6 +135,9 @@ def train(
     log_every: int = 10,
     device: torch.device = torch.device("cpu"),
     resume_from: Optional[str] = None,
+    hf_repo: Optional[str] = None,
+    hf_path_in_repo: str = "training/sft_latest.pt",
+    hf_token: Optional[str] = None,
 ):
     raw = model.module if isinstance(model, nn.DataParallel) else model
     raw.enable_gradient_checkpointing()
@@ -215,16 +218,36 @@ def train(
 
                 if avg_loss < best_loss:
                     best_loss = avg_loss
-                    _save(model, optimizer, model_cfg, global_step, best_loss, output_dir, "best")
+                    _save(
+                        model, optimizer, model_cfg, global_step, best_loss, output_dir, "best",
+                        hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
+                    )
 
                 if global_step % save_every == 0:
-                    _save(model, optimizer, model_cfg, global_step, best_loss, output_dir, f"step_{global_step:05d}")
+                    _save(
+                        model, optimizer, model_cfg, global_step, best_loss, output_dir, f"step_{global_step:05d}",
+                        hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
+                    )
 
-    _save(model, optimizer, model_cfg, global_step, best_loss, output_dir, "final")
+    _save(
+        model, optimizer, model_cfg, global_step, best_loss, output_dir, "final",
+        hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
+    )
     print(f"[SFT] Done. Best loss: {best_loss:.4f}")
 
 
-def _save(model, optimizer, model_cfg, step, best_loss, output_dir, tag):
+def _save(
+    model,
+    optimizer,
+    model_cfg,
+    step,
+    best_loss,
+    output_dir,
+    tag,
+    hf_repo: Optional[str] = None,
+    hf_path_in_repo: str = "training/sft_latest.pt",
+    hf_token: Optional[str] = None,
+):
     path = output_dir / f"sft_{tag}.pt"
     raw = model.module if isinstance(model, nn.DataParallel) else model
     torch.save({
@@ -235,6 +258,11 @@ def _save(model, optimizer, model_cfg, step, best_loss, output_dir, tag):
         "model_config": model_cfg.__dict__,
     }, path)
     print(f"[SAVE] {path}", flush=True)
+
+    if hf_repo and hf_path_in_repo:
+        from ssm.hf_checkpoint_sync import upload_checkpoint
+
+        upload_checkpoint(path, hf_repo, hf_path_in_repo, hf_token)
 
     # Keep only last 3 step checkpoints
     ckpts = sorted(output_dir.glob("sft_step_*.pt"), key=lambda p: p.stat().st_mtime)
@@ -270,6 +298,24 @@ def main():
             "Off by default: each GPU holds a full model copy and gradients reduce on GPU 0, "
             "which often causes OOM on 2×T4-class GPUs for this model size."
         ),
+    )
+    parser.add_argument(
+        "--hf-repo",
+        default=os.environ.get("HF_MODEL_REPO"),
+        help=(
+            "Hugging Face model repo id (your weights repo, not GitHub). "
+            "Uploads each save to --hf-sft-path. Defaults to HF_MODEL_REPO env."
+        ),
+    )
+    parser.add_argument(
+        "--hf-sft-path",
+        default="training/sft_latest.pt",
+        help="Path inside the model repo for the latest SFT checkpoint (overwritten each save).",
+    )
+    parser.add_argument(
+        "--hf-token",
+        default=None,
+        help="Hub token (defaults to HF_TOKEN / HUGGINGFACE_HUB_TOKEN).",
     )
     args = parser.parse_args()
 
@@ -325,6 +371,8 @@ def main():
     ds = ReasoningTraceDataset(args.traces, tokenizer, max_length=args.max_seq_len)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0)
 
+    hf_tok = args.hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+
     train(
         model=model,
         dataloader=loader,
@@ -336,6 +384,9 @@ def main():
         save_every=args.save_every,
         device=device,
         resume_from=args.resume,
+        hf_repo=args.hf_repo,
+        hf_path_in_repo=args.hf_sft_path,
+        hf_token=hf_tok,
     )  # --init-checkpoint only loads weights; does not restore optimizer step
 
 
