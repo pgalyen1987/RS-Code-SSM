@@ -137,11 +137,11 @@ def ssd_chunk_scan(
         A_cs_last = A_cs[:, c, -1, :]    # (B, H)
         decay_from_t = torch.exp(A_cs_last.unsqueeze(1) - A_cs[:, c])  # (B, T, H)
 
-        # BX: (B, T, H, N, D)
-        BX = torch.einsum('bthN,bthd->bthNd', Bc_c, Xc_c)   # (B, T, H, N, D)
-        # weight by decay: (B, T, H) -> (B, T, H, 1, 1)
-        BX_decayed = BX * decay_from_t.unsqueeze(-1).unsqueeze(-1)
-        h = h + BX_decayed.sum(dim=1)                        # (B, H, N, D)
+        # Fused: sum_t decay[t] * B[t] ⊗ X[t]  →  (B, H, N, D)
+        # Avoids materializing (B, T, H, N, D) which is 128 MiB at seq=512.
+        # Equivalent to: einsum(decay * B, X -> bthNd).sum(t)
+        B_decayed = Bc_c * decay_from_t.unsqueeze(-1)        # (B, T, H, N)
+        h = h + torch.einsum('bthN,bthd->bhNd', B_decayed, Xc_c)  # (B, H, N, D)
 
     # Remove padding
     Y_out = Y_out.reshape(B_batch, total_len, H, D)
