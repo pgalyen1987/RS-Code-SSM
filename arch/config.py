@@ -36,7 +36,7 @@ def ModelConfig700M() -> "ModelConfig":
         d_ffn=4096,
         vocab_size=152064,
         max_seq_len=32768,
-        recursion_depth=2,   # TRM-style: 2 passes through layer stack, 0 extra params
+        recursion_depth=1,   # TRM-style recursion: set to 2 for inference, 1 for T4 training (OOM at depth=2)
     )
 
 
