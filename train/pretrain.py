@@ -53,14 +53,15 @@ from arch.config import ModelConfig700M, ModelConfig3B
 
 # (lang_name, stack_smol_name, starcoder_name, marker)
 LANGUAGES = [
-    ("python",     "python",      "python",      "# Python\n"),
-    ("cpp",        "cpp",         "c-sharp",     "// C++\n"),
-    ("javascript", "javascript",  "javascript",  "// JavaScript\n"),
-    ("typescript", "typescript",  "typescript",  "// TypeScript\n"),
-    ("java",       "java",        "java",        "// Java\n"),
-    ("go",         "go",          "go",          "// Go\n"),
-    ("rust",       "rust",        "rust",        "// Rust\n"),
-    ("kotlin",     "kotlin",      "kotlin",      "// Kotlin\n"),
+    # (lang_name, _reserved, _reserved, marker)
+    ("python",     "", "", "# Python\n"),
+    ("cpp",        "", "", "// C++\n"),
+    ("javascript", "", "", "// JavaScript\n"),
+    ("typescript", "", "", "// TypeScript\n"),
+    ("java",       "", "", "// Java\n"),
+    ("go",         "", "", "// Go\n"),
+    ("rust",       "", "", "// Rust\n"),
+    ("kotlin",     "", "", "// Kotlin\n"),
 ]
 
 
@@ -71,50 +72,11 @@ def _encode(tokenizer, text: str) -> list[int]:
     return tokenizer.encode(text, add_special_tokens=False)
 
 
-def _iter_stack_smol(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
-    """Stream from bigcode/the-stack-smol — openly accessible, standard Parquet."""
-    from datasets import load_dataset
-    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
-    ds = load_dataset(
-        "bigcode/the-stack-smol",
-        data_dir=f"data/{lang_name}",
-        split="train",
-        streaming=True,
-    )
-    for sample in ds:
-        content = sample.get("content", "") or ""
-        ids = _encode(tokenizer, content)
-        if ids:
-            yield marker_ids + ids
-
-
-def _iter_starcoderdata(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
-    """Stream from bigcode/starcoderdata — StarCoder training corpus, per-language."""
-    from datasets import load_dataset
-    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
-    ds = load_dataset(
-        "bigcode/starcoderdata",
-        data_dir=lang_name,
-        split="train",
-        streaming=True,
-    )
-    for sample in ds:
-        content = sample.get("content", "") or ""
-        ids = _encode(tokenizer, content)
-        if ids:
-            yield marker_ids + ids
-
-
 def _iter_smollm_python(tokenizer) -> Iterator[list[int]]:
-    """Python-only fallback: HuggingFaceTB/smollm-corpus python-edu config."""
+    """Python educational code: HuggingFaceTB/smollm-corpus python-edu (open, ~10B tokens)."""
     from datasets import load_dataset
     marker_ids = tokenizer.encode("# Python\n", add_special_tokens=False)
-    ds = load_dataset(
-        "HuggingFaceTB/smollm-corpus",
-        "python-edu",
-        split="train",
-        streaming=True,
-    )
+    ds = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True)
     for sample in ds:
         content = sample.get("text", "") or ""
         ids = _encode(tokenizer, content)
@@ -122,17 +84,68 @@ def _iter_smollm_python(tokenizer) -> Iterator[list[int]]:
             yield marker_ids + ids
 
 
-def _make_lang_stream(tokenizer, lang_name: str, stack_name: str, marker: str) -> Iterator[list[int]]:
+def _iter_magicoder(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
     """
-    Try data sources in order for one language:
-      1. bigcode/the-stack-smol  (openly accessible ~10B tokens deduplicated)
-      2. bigcode/starcoderdata   (StarCoder training data)
-      3. smollm-corpus python-edu (Python only, final fallback)
+    ise-uiuc/Magicoder-OSS-Instruct-75K — open, multi-language, real GitHub code.
+    Filters by the 'lang' field to keep language streams separate.
+    Lang values in dataset: Python, C++, JavaScript, TypeScript, Java, Go, Rust, Kotlin, ...
     """
-    for label, gen_fn in [
-        ("the-stack-smol", lambda: _iter_stack_smol(tokenizer, stack_name, marker)),
-        ("starcoderdata",  lambda: _iter_starcoderdata(tokenizer, stack_name, marker)),
-    ]:
+    from datasets import load_dataset
+    lang_map = {
+        "python": "Python", "cpp": "C++", "javascript": "JavaScript",
+        "typescript": "TypeScript", "java": "Java", "go": "Go",
+        "rust": "Rust", "kotlin": "Kotlin",
+    }
+    target_lang = lang_map.get(lang_name, lang_name.capitalize())
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
+    ds = load_dataset("ise-uiuc/Magicoder-OSS-Instruct-75K", split="train", streaming=True)
+    for item in ds:
+        if item.get("lang", "") != target_lang:
+            continue
+        problem = item.get("problem", "") or ""
+        solution = item.get("solution", "") or ""
+        if not solution.strip():
+            continue
+        text = f"{marker}# Problem:\n{problem}\n\n# Solution:\n{solution}\n" if problem.strip() \
+               else f"{marker}{solution}\n"
+        ids = _encode(tokenizer, text)
+        if ids:
+            yield ids
+
+
+def _iter_evol_code(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
+    """
+    theblackcat102/evol-codealpaca-v1 — open, instruction+code, ~110K examples.
+    No language field — yield all (mixed lang, still useful for code pretraining).
+    Only used if no other source works.
+    """
+    from datasets import load_dataset
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
+    ds = load_dataset("theblackcat102/evol-codealpaca-v1", split="train", streaming=True)
+    for item in ds:
+        instruction = item.get("instruction", "") or ""
+        output = item.get("output", "") or ""
+        if not output.strip():
+            continue
+        ids = marker_ids + _encode(tokenizer, f"{instruction}\n{output}\n")
+        if ids:
+            yield ids
+
+
+def _make_lang_stream(tokenizer, lang_name: str, _unused: str, marker: str) -> Iterator[list[int]]:
+    """
+    Try data sources in order for one language (all open, no access approval needed):
+      1. HuggingFaceTB/smollm-corpus python-edu   (Python only, ~billions of tokens)
+      2. ise-uiuc/Magicoder-OSS-Instruct-75K       (multi-lang, real GitHub code)
+      3. theblackcat102/evol-codealpaca-v1          (mixed-lang fallback)
+    """
+    candidates = []
+    if lang_name == "python":
+        candidates.append(("smollm-python-edu", lambda: _iter_smollm_python(tokenizer)))
+    candidates.append(("magicoder", lambda: _iter_magicoder(tokenizer, lang_name, marker)))
+    candidates.append(("evol-codealpaca", lambda: _iter_evol_code(tokenizer, lang_name, marker)))
+
+    for label, gen_fn in candidates:
         try:
             gen = gen_fn()
             first = next(gen)
@@ -143,15 +156,7 @@ def _make_lang_stream(tokenizer, lang_name: str, stack_name: str, marker: str) -
         except Exception as e:
             print(f"[DATA] {lang_name}/{label} failed: {e}", flush=True)
 
-    # Python-only final fallback
-    if lang_name == "python":
-        try:
-            print(f"[DATA] python: using smollm-corpus python-edu fallback", flush=True)
-            yield from _iter_smollm_python(tokenizer)
-        except Exception as e:
-            print(f"[DATA] python/smollm-corpus failed: {e}", flush=True)
-    else:
-        print(f"[DATA] {lang_name}: all sources exhausted, skipping", flush=True)
+    print(f"[DATA] {lang_name}: all sources exhausted, skipping", flush=True)
 
 
 def _iter_novel_problems(tokenizer) -> Iterator[list[int]]:
