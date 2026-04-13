@@ -143,17 +143,16 @@ def train(
     raw.enable_gradient_checkpointing()
     model.to(device)
 
-    # fp16 AMP: halves activation + intermediate tensor memory on GPU.
-    # Without this the 1.65B model barely fits on T4 (14.56 GB) — weights+grads
-    # alone are ~13.2 GB in float32, leaving almost nothing for activations.
+    # fp16 training: store weights + gradients in fp16 (3.3 GB each vs 6.6 GB).
+    # GradScaler is NOT used — it requires fp32 gradients, but our model is fp16.
+    # Adafactor keeps its own fp32 second moments internally, so it handles fp16
+    # parameters correctly without loss scaling.
+    # autocast is still used to keep activations in fp16 (saves activation memory).
     use_amp = device.type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     if use_amp:
-        # Store weights in fp16: 3.3 GB instead of 6.6 GB. Adafactor keeps
-        # fp32 second moments internally so optimizer state is unaffected.
         model = model.to(torch.float16)
         free, total = torch.cuda.mem_get_info(device)
-        print(f"[AMP] fp16 model + AMP enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
+        print(f"[AMP] fp16 model + autocast enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     optimizer = Adafactor(
         model.parameters(),
@@ -200,12 +199,13 @@ def train(
                 if isinstance(aux_loss, torch.Tensor):
                     aux_loss = aux_loss.mean()
                 B, L, V = logits.shape
-                loss_ce = F.cross_entropy(logits.view(B * L, V), labels.view(B * L), ignore_index=-100)
-                loss = loss_ce + 0.01 * aux_loss
+                # Cast to fp32 for numerical stability — cross_entropy in fp16 can NaN
+                loss_ce = F.cross_entropy(logits.float().view(B * L, V), labels.view(B * L), ignore_index=-100)
+                loss = loss_ce + 0.01 * aux_loss.float()
                 if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                     loss = loss.mean()
             loss = loss / grad_accum
-            scaler.scale(loss).backward()
+            loss.backward()
             accum_loss += loss.item() * grad_accum
             accum_steps_done += 1
 
@@ -213,10 +213,8 @@ def train(
                 current_lr = get_lr(global_step)
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
-                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
 
                 global_step += 1

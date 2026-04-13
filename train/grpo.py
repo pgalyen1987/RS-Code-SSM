@@ -703,7 +703,6 @@ class GRPOTrainer:
             warmup_init=False,
         )
         self.use_amp = device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
 
         self.step = 0
         self.best_reward = -float("inf")
@@ -766,7 +765,7 @@ class GRPOTrainer:
             self.device,
         )
         loss = loss / self.cfg.grad_accum_steps
-        self.scaler.scale(loss).backward()
+        loss.backward()
 
         return {"loss": loss.item() * self.cfg.grad_accum_steps, "mean_reward": mean_r, "rewards": rewards}
 
@@ -804,10 +803,8 @@ class GRPOTrainer:
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = self.cfg.lr * lr_scale
 
-                self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                self.optimizer.step()
                 self.optimizer.zero_grad()
 
                 avg_loss = accum_loss / self.cfg.grad_accum_steps
