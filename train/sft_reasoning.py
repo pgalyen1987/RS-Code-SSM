@@ -149,8 +149,11 @@ def train(
     use_amp = device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     if use_amp:
+        # Store weights in fp16: 3.3 GB instead of 6.6 GB. Adafactor keeps
+        # fp32 second moments internally so optimizer state is unaffected.
+        model = model.to(torch.float16)
         free, total = torch.cuda.mem_get_info(device)
-        print(f"[AMP] fp16 enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
+        print(f"[AMP] fp16 model + AMP enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     optimizer = Adafactor(
         model.parameters(),

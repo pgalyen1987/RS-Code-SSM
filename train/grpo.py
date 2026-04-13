@@ -619,6 +619,7 @@ def grpo_loss(
     total_loss = torch.tensor(0.0, device=device)
     kl_total = torch.tensor(0.0, device=device)
     n_valid = 0
+    use_amp = device.type == "cuda"
 
     for i, (gen_ids, adv) in enumerate(zip(rollout_ids, advantages)):
         if len(gen_ids) == 0:
@@ -628,12 +629,13 @@ def grpo_loss(
         full_ids = torch.cat([prompt_ids[0], gen_ids.to(device)]).unsqueeze(0)  # (1, L)
 
         # Forward pass (current policy)
-        logits, _, _ = model(full_ids)
+        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            logits, _, _ = model(full_ids)
         L_prompt = prompt_ids.shape[1]
 
         # Slice generated portion
         gen_logits = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]  # (1, L_gen, V)
-        gen_logprobs = torch.log_softmax(gen_logits, dim=-1)
+        gen_logprobs = torch.log_softmax(gen_logits.float(), dim=-1)
         token_lp = gen_logprobs[0, torch.arange(len(gen_ids)), gen_ids.to(device)]  # (L_gen,)
         seq_lp = token_lp.mean()  # mean over tokens
 
@@ -643,9 +645,10 @@ def grpo_loss(
 
         # KL penalty against reference model
         with torch.no_grad():
-            ref_logits, _, _ = ref_model(full_ids)
+            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                ref_logits, _, _ = ref_model(full_ids)
             ref_logprobs = torch.log_softmax(
-                ref_logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :], dim=-1
+                ref_logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :].float(), dim=-1
             )
 
         kl = (torch.exp(gen_logprobs) * (gen_logprobs - ref_logprobs)).sum(dim=-1).mean()
@@ -699,6 +702,8 @@ class GRPOTrainer:
             scale_parameter=False,
             warmup_init=False,
         )
+        self.use_amp = device.type == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
 
         self.step = 0
         self.best_reward = -float("inf")
@@ -761,7 +766,7 @@ class GRPOTrainer:
             self.device,
         )
         loss = loss / self.cfg.grad_accum_steps
-        loss.backward()
+        self.scaler.scale(loss).backward()
 
         return {"loss": loss.item() * self.cfg.grad_accum_steps, "mean_reward": mean_r, "rewards": rewards}
 
@@ -799,8 +804,10 @@ class GRPOTrainer:
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = self.cfg.lr * lr_scale
 
+                self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
-                self.optimizer.step()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
                 self.optimizer.zero_grad()
 
                 avg_loss = accum_loss / self.cfg.grad_accum_steps
@@ -957,8 +964,17 @@ def _main():
         model.load_state_dict(state, strict=False)
         print(f"[INFO] Loaded checkpoint: {args.checkpoint}", flush=True)
 
-    # Reference model (frozen copy)
+    # fp16: halves weight memory (6.6 GB → 3.3 GB) on T4.
+    # Adafactor keeps fp32 second moments internally so optimizer is fine.
+    if device.type == "cuda":
+        model = model.to(torch.float16)
+        free, total = torch.cuda.mem_get_info(device)
+        print(f"[INFO] fp16 model. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
+
+    # Reference model (frozen copy) — must match dtype of training model
     ref_model = CodingSSM(model_cfg).to(device)
+    if device.type == "cuda":
+        ref_model = ref_model.to(torch.float16)
     ref_model.load_state_dict(model.state_dict())
     for p in ref_model.parameters():
         p.requires_grad_(False)
