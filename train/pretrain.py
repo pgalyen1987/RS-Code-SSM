@@ -235,8 +235,8 @@ def make_token_stream(tokenizer) -> Iterator[list[int]]:
     print(f"[DATA] + novel problem datasets: {[d[0] for d in NOVEL_PROBLEM_DATASETS]}", flush=True)
 
     code_gens = [
-        _make_lang_stream(tokenizer, name, data_dir, marker)
-        for name, data_dir, marker in LANGUAGES
+        _make_lang_stream(tokenizer, name, stack_name, marker)
+        for name, stack_name, _sc_name, marker in LANGUAGES
     ]
     problem_gen = _iter_novel_problems(tokenizer)
 
