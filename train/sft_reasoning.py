@@ -166,12 +166,20 @@ def train(
     best_loss = float("inf")
 
     if resume_from:
-        ckpt = torch.load(resume_from, map_location=device)
+        # Load to CPU first — the fp32 checkpoint is 6+ GB.  Loading directly
+        # to GPU would put 6 GB fp32 tensors on a 15.6 GB T4 alongside the
+        # fp16 model (3.3 GB) + gradients (3.3 GB) + CUDA overhead (~3.8 GB),
+        # leaving no room for the optimizer step.
+        ckpt = torch.load(resume_from, map_location="cpu")
         model.load_state_dict(ckpt["model_state"])
-        optimizer.load_state_dict(ckpt["optimizer_state"])
+        # Skip restoring optimizer state: Adafactor fp32 second moments are
+        # ~3 GB on GPU and we're only at step 78/20954 — barely warmed up.
+        # Fresh state costs one slightly noisier step; OOM costs the whole run.
         global_step = ckpt.get("step", 0)
         best_loss = ckpt.get("best_loss", best_loss)
-        print(f"[RESUME] Loaded from {resume_from} (step={global_step})")
+        del ckpt
+        torch.cuda.empty_cache()
+        print(f"[RESUME] Loaded model weights from {resume_from} (step={global_step}, optimizer state reset)")
 
     total_steps = len(dataloader) * epochs // grad_accum
 

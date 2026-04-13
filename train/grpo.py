@@ -954,11 +954,14 @@ def _main():
     model = CodingSSM(model_cfg).to(device)
     print(f"[INFO] Model params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
 
-    loaded_ckpt = None
     if args.checkpoint:
-        loaded_ckpt = torch.load(args.checkpoint, map_location=device)
-        state = loaded_ckpt.get("model_state", loaded_ckpt)
+        # Load to CPU to avoid placing 6+ GB fp32 checkpoint on a 15.6 GB T4
+        # alongside the fp16 model, gradients, and CUDA overhead.
+        ckpt = torch.load(args.checkpoint, map_location="cpu")
+        state = ckpt.get("model_state", ckpt)
         model.load_state_dict(state, strict=False)
+        del ckpt
+        torch.cuda.empty_cache()
         print(f"[INFO] Loaded checkpoint: {args.checkpoint}", flush=True)
 
     # fp16: halves weight memory (6.6 GB → 3.3 GB) on T4.
