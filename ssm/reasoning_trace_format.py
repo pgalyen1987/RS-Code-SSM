@@ -44,6 +44,7 @@ def record_for_sft(
     source: str = "external",
     problem_id: str | None = None,
     test_code: str | None = None,
+    language: str | None = None,
     extra: dict | None = None,
 ) -> dict:
     """One JSONL row compatible with SFT + merge_traces + GRPO (optional test_code)."""
@@ -59,6 +60,8 @@ def record_for_sft(
         rec["problem_id"] = problem_id
     if test_code:
         rec["test_code"] = test_code
+    if language:
+        rec["language"] = language
     if extra:
         rec.update(extra)
     return rec

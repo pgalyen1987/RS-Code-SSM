@@ -883,6 +883,12 @@ def main():
         help="Path inside the model repo for the latest GRPO checkpoint.",
     )
     parser.add_argument("--hf-token", default=None, help="Hub token (defaults to HF_TOKEN).")
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=None,
+        help="Save (and HF-upload) every N steps. Overrides GRPOConfig.save_every (default 200).",
+    )
     args = parser.parse_args()
 
     if args.device:
@@ -905,6 +911,7 @@ def main():
         kl_coeff=args.kl_coeff,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        **({'save_every': args.save_every} if args.save_every is not None else {}),
     )
 
     tokenizer = AutoTokenizer.from_pretrained(

@@ -263,6 +263,10 @@ def _save(
         from ssm.hf_checkpoint_sync import upload_checkpoint
 
         upload_checkpoint(path, hf_repo, hf_path_in_repo, hf_token)
+        # When SFT completes, also push a persistent "final" marker so a new
+        # Kaggle session can detect SFT is done and skip re-running it.
+        if tag == "final":
+            upload_checkpoint(path, hf_repo, "training/sft_final.pt", hf_token)
 
     # Keep only last 3 step checkpoints
     ckpts = sorted(output_dir.glob("sft_step_*.pt"), key=lambda p: p.stat().st_mtime)

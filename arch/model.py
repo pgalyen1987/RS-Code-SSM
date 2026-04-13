@@ -161,28 +161,41 @@ class CodingSSM(nn.Module):
         """
         x = self.embed(input_ids)   # (B, L, d_model)
 
+        # Recursive inference: apply layer stack recursion_depth times.
+        # With recursion_depth=2 (TRM-style) the model makes 2 full passes through
+        # the same weights — doubling effective depth at zero extra parameters.
+        # When state caching is active (generation), we only do one pass to keep
+        # the KV/SSM state layout simple and unambiguous.
+        recursion = self.config.recursion_depth if states is None else 1
+
         if states is None:
             states = [None] * self.config.n_layers
 
         total_aux_loss = torch.tensor(0.0, device=x.device)
         new_states = []
 
-        for i, layer in enumerate(self.layers):
-            if self.gradient_checkpointing and self.training and states[i] is None:
-                # Wrap layer forward in gradient checkpoint.
-                # aux_loss and new_state are not checkpointable (non-tensor outputs),
-                # so we split: checkpoint only the hidden state, collect aux separately.
-                def make_fn(layer_):
-                    def fn(x_):
-                        out, _, aux = layer_(x_, state=None)
-                        return out, aux
-                    return fn
-                x, aux_loss = grad_checkpoint(make_fn(layer), x, use_reentrant=False)
-                new_state = None
-            else:
-                x, new_state, aux_loss = layer(x, state=states[i])
-            total_aux_loss = total_aux_loss + aux_loss
-            new_states.append(new_state)
+        for rec in range(recursion):
+            new_states = []
+            for i, layer in enumerate(self.layers):
+                # First recursion pass uses the caller-provided states (generation KV/SSM cache).
+                # Subsequent passes (recursion_depth>1, training only) always pass None — the
+                # hidden state x carries the information forward, not the SSM state.
+                layer_state = states[i] if rec == 0 else None
+                if self.gradient_checkpointing and self.training and layer_state is None:
+                    # Wrap layer forward in gradient checkpoint.
+                    # aux_loss and new_state are not checkpointable (non-tensor outputs),
+                    # so we split: checkpoint only the hidden state, collect aux separately.
+                    def make_fn(layer_):
+                        def fn(x_):
+                            out, _, aux = layer_(x_, state=None)
+                            return out, aux
+                        return fn
+                    x, aux_loss = grad_checkpoint(make_fn(layer), x, use_reentrant=False)
+                    new_state = None
+                else:
+                    x, new_state, aux_loss = layer(x, state=layer_state)
+                total_aux_loss = total_aux_loss + aux_loss
+                new_states.append(new_state)
 
         x = self.norm_f(x)
         logits = self.lm_head(x)   # (B, L, vocab_size)

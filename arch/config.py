@@ -36,6 +36,7 @@ def ModelConfig700M() -> "ModelConfig":
         d_ffn=4096,
         vocab_size=152064,
         max_seq_len=32768,
+        recursion_depth=2,   # TRM-style: 2 passes through layer stack, 0 extra params
     )
 
 
@@ -79,6 +80,11 @@ class ModelConfig:
     vocab_size: int = 152064  # Qwen2.5 tokenizer
     max_seq_len: int = 32768
     pad_token_id: int = 0
+
+    # Recursive reasoning (TRM-style: apply layer stack N times, zero extra params)
+    # depth=1 → standard single-pass (default); depth=2+ → recursive inference
+    # Increases effective compute depth without adding parameters.
+    recursion_depth: int = 1
 
     # Training
     dropout: float = 0.0
