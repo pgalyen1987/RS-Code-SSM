@@ -855,15 +855,32 @@ class GRPOTrainer:
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 def main():
-    # Single-instance lock — Kaggle T4 x2 launches two parallel workers
-    import fcntl
-    _lock_fh = open("/tmp/ssm_grpo_train.lock", "w")
+    import os as _os
+    _kaggle_wd = "/kaggle/working"
+    _lock_dir  = _kaggle_wd if _os.path.isdir(_kaggle_wd) else "/tmp"
+    _lock_path = _os.path.join(_lock_dir, ".ssm_grpo_train.lock")
+    _lock_acquired = False
     try:
-        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError:
-        print("[GRPO] Another worker already holds the GPU — this worker exits.", flush=True)
+        _lfd = _os.open(_lock_path, _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY, 0o644)
+        _os.write(_lfd, str(_os.getpid()).encode())
+        _os.close(_lfd)
+        _lock_acquired = True
+        print(f"[GRPO] Lock acquired: {_lock_path}", flush=True)
+    except FileExistsError:
+        print(f"[GRPO] Another worker already training ({_lock_path} exists) — exiting.", flush=True)
         return
 
+    try:
+        _main()
+    finally:
+        if _lock_acquired:
+            try:
+                _os.unlink(_lock_path)
+            except Exception:
+                pass
+
+
+def _main():
     parser = argparse.ArgumentParser(description="GRPO training for CodingSSM")
     parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
     parser.add_argument("--checkpoint", default=None, help="SFT checkpoint to start from")

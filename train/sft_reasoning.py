@@ -290,18 +290,36 @@ def _save(
 
 def main():
     # ── Single-instance lock ──────────────────────────────────────────────────
-    # Kaggle GPU T4 x2 spawns two parallel papermill workers that both reach
-    # this subprocess.  Only one should actually run on GPU 0; the other exits
-    # cleanly so it doesn't compete for VRAM.
-    import fcntl
-    _lock_path = "/tmp/ssm_sft_train.lock"
-    _lock_fh = open(_lock_path, "w")
+    # Kaggle GPU T4 x2 launches two parallel papermill workers (separate /tmp,
+    # but shared /kaggle/working).  Use atomic O_CREAT|O_EXCL on /kaggle/working
+    # so only one worker trains; the other exits cleanly (code 0).
+    import os as _os
+    _kaggle_wd = "/kaggle/working"
+    _lock_dir  = _kaggle_wd if _os.path.isdir(_kaggle_wd) else "/tmp"
+    _lock_path = _os.path.join(_lock_dir, ".ssm_sft_train.lock")
+    _lock_acquired = False
     try:
-        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError:
-        print("[SFT] Another worker already holds the GPU — this worker exits.", flush=True)
-        return  # exit with code 0, not 1
+        # O_CREAT|O_EXCL is atomic: exactly one process creates the file
+        _lfd = _os.open(_lock_path, _os.O_CREAT | _os.O_EXCL | _os.O_WRONLY, 0o644)
+        _os.write(_lfd, str(_os.getpid()).encode())
+        _os.close(_lfd)
+        _lock_acquired = True
+        print(f"[SFT] Lock acquired: {_lock_path}", flush=True)
+    except FileExistsError:
+        print(f"[SFT] Another worker already training ({_lock_path} exists) — exiting.", flush=True)
+        return  # exit code 0
 
+    try:
+        _main()
+    finally:
+        if _lock_acquired:
+            try:
+                _os.unlink(_lock_path)
+            except Exception:
+                pass
+
+
+def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
     parser.add_argument("--output-dir", default="checkpoints/sft")
