@@ -855,6 +855,15 @@ class GRPOTrainer:
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 def main():
+    # Single-instance lock — Kaggle T4 x2 launches two parallel workers
+    import fcntl
+    _lock_fh = open("/tmp/ssm_grpo_train.lock", "w")
+    try:
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        print("[GRPO] Another worker already holds the GPU — this worker exits.", flush=True)
+        return
+
     parser = argparse.ArgumentParser(description="GRPO training for CodingSSM")
     parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
     parser.add_argument("--checkpoint", default=None, help="SFT checkpoint to start from")

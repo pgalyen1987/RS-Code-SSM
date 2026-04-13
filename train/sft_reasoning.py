@@ -147,7 +147,7 @@ def train(
     # Without this the 1.65B model barely fits on T4 (14.56 GB) — weights+grads
     # alone are ~13.2 GB in float32, leaving almost nothing for activations.
     use_amp = device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     if use_amp:
         free, total = torch.cuda.mem_get_info(device)
         print(f"[AMP] fp16 enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
@@ -191,7 +191,7 @@ def train(
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
 
-            with torch.cuda.amp.autocast(dtype=torch.float16, enabled=use_amp):
+            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 logits, aux_loss = model(input_ids)
                 # DataParallel gathers per-device MoE aux as a vector — reduce to scalar
                 if isinstance(aux_loss, torch.Tensor):
@@ -289,6 +289,19 @@ def _save(
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
 def main():
+    # ── Single-instance lock ──────────────────────────────────────────────────
+    # Kaggle GPU T4 x2 spawns two parallel papermill workers that both reach
+    # this subprocess.  Only one should actually run on GPU 0; the other exits
+    # cleanly so it doesn't compete for VRAM.
+    import fcntl
+    _lock_path = "/tmp/ssm_sft_train.lock"
+    _lock_fh = open(_lock_path, "w")
+    try:
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        print("[SFT] Another worker already holds the GPU — this worker exits.", flush=True)
+        return  # exit with code 0, not 1
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
     parser.add_argument("--output-dir", default="checkpoints/sft")
