@@ -37,53 +37,148 @@ from arch.config import ModelConfig700M, ModelConfig3B
 
 
 # ─── Data streaming ──────────────────────────────────────────────────────────
+#
+# Data source priority (all public Parquet, no loading scripts, no gating):
+#
+#  Raw code (~80% of tokens):
+#   1. bigcode/the-stack-smol  — 10B token deduplicated subset, openly accessible
+#   2. bigcode/starcoderdata   — StarCoder training data (per-language configs)
+#   3. HuggingFaceTB/smollm-corpus (python-edu) — Python fallback
+#
+#  Novel problems (~20% of tokens, 1 per 4 code samples):
+#   - deepmind/code_contests   — competitive programming + solutions
+#   - greengerong/leetcode     — LeetCode problems + Python solutions
+#   - iamtarun/python_code_instructions_18k_alpaca — instruction-style problems
+#   - TokenBender/code_instructions_122k_alpaca_style — broader coverage
 
-# Languages to train on — round-robin interleaved for balanced representation.
-# The Stack data_dir names and their comment markers.
+# (lang_name, stack_smol_name, starcoder_name, marker)
 LANGUAGES = [
-    ("python",     "data/python",      "# Python\n"),
-    ("kotlin",     "data/kotlin",      "// Kotlin\n"),
-    ("cpp",        "data/c++",         "// C++\n"),
-    ("javascript", "data/javascript",  "// JavaScript\n"),
-    ("typescript", "data/typescript",  "// TypeScript\n"),
-    ("java",       "data/java",        "// Java\n"),
-    ("go",         "data/go",          "// Go\n"),
-    ("rust",       "data/rust",        "// Rust\n"),
+    ("python",     "python",      "python",      "# Python\n"),
+    ("cpp",        "cpp",         "c-sharp",     "// C++\n"),
+    ("javascript", "javascript",  "javascript",  "// JavaScript\n"),
+    ("typescript", "typescript",  "typescript",  "// TypeScript\n"),
+    ("java",       "java",        "java",        "// Java\n"),
+    ("go",         "go",          "go",          "// Go\n"),
+    ("rust",       "rust",        "rust",        "// Rust\n"),
+    ("kotlin",     "kotlin",      "kotlin",      "// Kotlin\n"),
 ]
 
-# Novel problem datasets mixed into pretraining.
-# These are high-quality curated problems (competitive programming, LeetCode,
-# math) rather than raw code — they teach problem-solving structure early.
-NOVEL_PROBLEM_DATASETS = [
-    # Competitive programming: full problem + editorial + accepted solutions
-    ("deepmind/code_contests",   "python",  "problem"),
-    # APPS: 10K coding problems with solutions across difficulty levels
-    ("codeparrot/apps",          "python",  "solutions"),
-    # LeetCode problems with editorial-style explanations
-    ("greengerong/leetcode",     "python",  "python"),
-]
+
+def _encode(tokenizer, text: str) -> list[int]:
+    text = text.strip()
+    if not text:
+        return []
+    return tokenizer.encode(text, add_special_tokens=False)
+
+
+def _iter_stack_smol(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
+    """Stream from bigcode/the-stack-smol — openly accessible, standard Parquet."""
+    from datasets import load_dataset
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
+    ds = load_dataset(
+        "bigcode/the-stack-smol",
+        data_dir=f"data/{lang_name}",
+        split="train",
+        streaming=True,
+    )
+    for sample in ds:
+        content = sample.get("content", "") or ""
+        ids = _encode(tokenizer, content)
+        if ids:
+            yield marker_ids + ids
+
+
+def _iter_starcoderdata(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
+    """Stream from bigcode/starcoderdata — StarCoder training corpus, per-language."""
+    from datasets import load_dataset
+    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
+    ds = load_dataset(
+        "bigcode/starcoderdata",
+        data_dir=lang_name,
+        split="train",
+        streaming=True,
+    )
+    for sample in ds:
+        content = sample.get("content", "") or ""
+        ids = _encode(tokenizer, content)
+        if ids:
+            yield marker_ids + ids
+
+
+def _iter_smollm_python(tokenizer) -> Iterator[list[int]]:
+    """Python-only fallback: HuggingFaceTB/smollm-corpus python-edu config."""
+    from datasets import load_dataset
+    marker_ids = tokenizer.encode("# Python\n", add_special_tokens=False)
+    ds = load_dataset(
+        "HuggingFaceTB/smollm-corpus",
+        "python-edu",
+        split="train",
+        streaming=True,
+    )
+    for sample in ds:
+        content = sample.get("text", "") or ""
+        ids = _encode(tokenizer, content)
+        if ids:
+            yield marker_ids + ids
+
+
+def _make_lang_stream(tokenizer, lang_name: str, stack_name: str, marker: str) -> Iterator[list[int]]:
+    """
+    Try data sources in order for one language:
+      1. bigcode/the-stack-smol  (openly accessible ~10B tokens deduplicated)
+      2. bigcode/starcoderdata   (StarCoder training data)
+      3. smollm-corpus python-edu (Python only, final fallback)
+    """
+    for label, gen_fn in [
+        ("the-stack-smol", lambda: _iter_stack_smol(tokenizer, stack_name, marker)),
+        ("starcoderdata",  lambda: _iter_starcoderdata(tokenizer, stack_name, marker)),
+    ]:
+        try:
+            gen = gen_fn()
+            first = next(gen)
+            print(f"[DATA] {lang_name}: using {label}", flush=True)
+            yield first
+            yield from gen
+            return
+        except Exception as e:
+            print(f"[DATA] {lang_name}/{label} failed: {e}", flush=True)
+
+    # Python-only final fallback
+    if lang_name == "python":
+        try:
+            print(f"[DATA] python: using smollm-corpus python-edu fallback", flush=True)
+            yield from _iter_smollm_python(tokenizer)
+        except Exception as e:
+            print(f"[DATA] python/smollm-corpus failed: {e}", flush=True)
+    else:
+        print(f"[DATA] {lang_name}: all sources exhausted, skipping", flush=True)
 
 
 def _iter_novel_problems(tokenizer) -> Iterator[list[int]]:
     """
-    Stream novel problem datasets (competitive programming, LeetCode, APPS).
-    These are interleaved 1:4 with raw code to inject problem-solving structure
-    without overwhelming the code pretraining signal.
+    Stream novel problem datasets interleaved into pretraining.
+    All use standard Parquet (no loading scripts, no gating).
     """
     from datasets import load_dataset
+    import json as _json
 
-    def _encode(text: str) -> list[int]:
-        text = text.strip()
-        if not text:
-            return []
-        return tokenizer.encode(text, add_special_tokens=False)
+    sources = [
+        # Competitive programming: full problem statement + accepted solutions
+        ("deepmind/code_contests", "train"),
+        # LeetCode problems + Python solutions
+        ("greengerong/leetcode", "train"),
+        # Instruction-style coding problems (18K)
+        ("iamtarun/python_code_instructions_18k_alpaca", "train"),
+        # Broader instruction coverage (122K)
+        ("TokenBender/code_instructions_122k_alpaca_style", "train"),
+    ]
 
-    for dataset_id, split_or_lang, field in NOVEL_PROBLEM_DATASETS:
+    for dataset_id, split in sources:
         try:
-            if dataset_id == "deepmind/code_contests":
-                ds = load_dataset(dataset_id, split="train", streaming=True, trust_remote_code=True)
-                for item in ds:
-                    # Format: problem description + solutions
+            ds = load_dataset(dataset_id, split=split, streaming=True)
+            for item in ds:
+                text = ""
+                if dataset_id == "deepmind/code_contests":
                     problem = item.get("description", "") or ""
                     solutions = item.get("solutions", {})
                     py_sols = solutions.get("solution", []) if isinstance(solutions, dict) else []
@@ -92,108 +187,33 @@ def _iter_novel_problems(tokenizer) -> Iterator[list[int]]:
                     text = f"# Competitive Programming Problem\n\"\"\"\n{problem}\n\"\"\"\n"
                     if py_sols:
                         text += f"\n# Solution:\n{py_sols[0]}\n"
-                    ids = _encode(text)
-                    if ids:
-                        yield ids
 
-            elif dataset_id == "codeparrot/apps":
-                ds = load_dataset(dataset_id, split="train", streaming=True, trust_remote_code=True)
-                for item in ds:
-                    problem = item.get("problem_id", "")
-                    question = item.get("question", "") or ""
-                    solutions_raw = item.get("solutions", "") or ""
-                    if not question.strip():
-                        continue
-                    try:
-                        import json as _json
-                        sols = _json.loads(solutions_raw) if solutions_raw else []
-                        sol_text = sols[0] if sols else ""
-                    except Exception:
-                        sol_text = ""
-                    text = f"# APPS Problem\n\"\"\"\n{question}\n\"\"\"\n"
-                    if sol_text:
-                        text += f"\n# Solution:\n{sol_text}\n"
-                    ids = _encode(text)
-                    if ids:
-                        yield ids
-
-            elif dataset_id == "greengerong/leetcode":
-                ds = load_dataset(dataset_id, split="train", streaming=True, trust_remote_code=True)
-                for item in ds:
+                elif dataset_id == "greengerong/leetcode":
                     title = item.get("title", "") or ""
                     content = item.get("content", "") or ""
-                    solution = item.get(field, "") or ""  # field = "python"
+                    solution = item.get("python", "") or ""
                     if not content.strip():
                         continue
                     text = f"# LeetCode: {title}\n\"\"\"\n{content}\n\"\"\"\n"
                     if solution.strip():
                         text += f"\n# Python Solution:\n{solution}\n"
-                    ids = _encode(text)
-                    if ids:
-                        yield ids
+
+                elif dataset_id in (
+                    "iamtarun/python_code_instructions_18k_alpaca",
+                    "TokenBender/code_instructions_122k_alpaca_style",
+                ):
+                    instruction = item.get("instruction", "") or ""
+                    output = item.get("output", "") or ""
+                    if not instruction.strip():
+                        continue
+                    text = f"# Problem: {instruction}\n\n# Solution:\n{output}\n"
+
+                ids = _encode(tokenizer, text)
+                if ids:
+                    yield ids
 
         except Exception as e:
             print(f"[DATA] Novel problems {dataset_id} failed: {e}", flush=True)
-
-
-def _iter_the_stack_lang(tokenizer, lang_name: str, data_dir: str, marker: str) -> Iterator[list[int]]:
-    """Stream one language from bigcode/the-stack with a language marker prefix."""
-    from datasets import load_dataset
-    ds = load_dataset(
-        "bigcode/the-stack",
-        data_dir=data_dir,
-        split="train",
-        streaming=True,
-        trust_remote_code=True,
-    )
-    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
-    for sample in ds:
-        content = sample.get("content", "") or ""
-        if not content.strip():
-            continue
-        ids = tokenizer.encode(content, add_special_tokens=False)
-        if ids:
-            yield marker_ids + ids
-
-
-def _iter_github_code_lang(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
-    """Fallback: stream one language from codeparrot/github-code."""
-    from datasets import load_dataset
-    # Map our names to codeparrot language strings
-    lang_map = {
-        "python": "Python", "kotlin": "Kotlin", "cpp": "C++",
-        "javascript": "JavaScript", "typescript": "TypeScript",
-        "java": "Java", "go": "Go", "rust": "Rust",
-    }
-    gh_lang = lang_map.get(lang_name, lang_name)
-    ds = load_dataset(
-        "codeparrot/github-code",
-        streaming=True, split="train", trust_remote_code=True,
-        filters=[("language", gh_lang)],
-    )
-    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
-    for sample in ds:
-        content = sample.get("code", "") or ""
-        if not content.strip():
-            continue
-        ids = tokenizer.encode(content, add_special_tokens=False)
-        if ids:
-            yield marker_ids + ids
-
-
-def _make_lang_stream(tokenizer, lang_name: str, data_dir: str, marker: str) -> Iterator[list[int]]:
-    """Try the-stack for one language; fall back to github-code."""
-    try:
-        gen = _iter_the_stack_lang(tokenizer, lang_name, data_dir, marker)
-        first = next(gen)   # peek to confirm
-        yield first
-        yield from gen
-    except Exception as e:
-        print(f"[DATA] the-stack/{lang_name} failed ({e}), trying github-code", flush=True)
-        try:
-            yield from _iter_github_code_lang(tokenizer, lang_name, marker)
-        except Exception as e2:
-            print(f"[DATA] github-code/{lang_name} failed ({e2}), skipping", flush=True)
 
 
 def make_token_stream(tokenizer) -> Iterator[list[int]]:
