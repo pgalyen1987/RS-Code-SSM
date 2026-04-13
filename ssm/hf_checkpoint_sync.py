@@ -55,24 +55,40 @@ def download_checkpoint(
     """
     Download a checkpoint from the Hub into dest_path (parent dirs created).
     Returns True if the file was written.
+    Streams directly to disk with periodic progress so large files don't look frozen.
     """
     token = token or get_hf_token()
     if not token:
         return False
+    dest_path = Path(dest_path)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        from huggingface_hub import hf_hub_download
+        import requests
 
-        cached = hf_hub_download(
-            repo_id=repo_id,
-            filename=path_in_repo,
-            repo_type="model",
-            token=token,
-        )
-        dest_path = Path(dest_path)
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(cached, dest_path)
-        print(f"[HF] Pulled {repo_id}/{path_in_repo} → {dest_path}", flush=True)
+        url = f"https://huggingface.co/{repo_id}/resolve/main/{path_in_repo}"
+        headers = {"Authorization": f"Bearer {token}"}
+        print(f"[HF] Downloading {repo_id}/{path_in_repo} ...", flush=True)
+        with requests.get(url, headers=headers, stream=True, timeout=30) as r:
+            if r.status_code == 404:
+                print(f"[HF] Pull skipped ({path_in_repo}): not found (first run?)", flush=True)
+                return False
+            r.raise_for_status()
+            total = int(r.headers.get("content-length", 0))
+            downloaded = 0
+            last_pct = -1
+            with open(dest_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):  # 8 MB chunks
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = int(downloaded / total * 100)
+                        if pct >= last_pct + 10:
+                            print(f"[HF]   {pct}% ({downloaded // 1024 // 1024} / {total // 1024 // 1024} MB)", flush=True)
+                            last_pct = pct
+        print(f"[HF] Pulled → {dest_path} ({downloaded // 1024 // 1024} MB)", flush=True)
         return True
     except Exception as e:
         print(f"[HF] Pull skipped ({path_in_repo}): {e}", flush=True)
+        if dest_path.exists() and dest_path.stat().st_size == 0:
+            dest_path.unlink()
         return False
