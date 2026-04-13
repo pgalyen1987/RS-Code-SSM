@@ -216,6 +216,14 @@ def _iter_novel_problems(tokenizer) -> Iterator[list[int]]:
             print(f"[DATA] Novel problems {dataset_id} failed: {e}", flush=True)
 
 
+NOVEL_PROBLEM_DATASETS = [
+    ("deepmind/code_contests", "train"),
+    ("greengerong/leetcode", "train"),
+    ("iamtarun/python_code_instructions_18k_alpaca", "train"),
+    ("TokenBender/code_instructions_122k_alpaca_style", "train"),
+]
+
+
 def make_token_stream(tokenizer) -> Iterator[list[int]]:
     """
     Round-robin interleave all languages + novel problem datasets.
