@@ -51,6 +51,90 @@ LANGUAGES = [
     ("rust",       "data/rust",        "// Rust\n"),
 ]
 
+# Novel problem datasets mixed into pretraining.
+# These are high-quality curated problems (competitive programming, LeetCode,
+# math) rather than raw code — they teach problem-solving structure early.
+NOVEL_PROBLEM_DATASETS = [
+    # Competitive programming: full problem + editorial + accepted solutions
+    ("deepmind/code_contests",   "python",  "problem"),
+    # APPS: 10K coding problems with solutions across difficulty levels
+    ("codeparrot/apps",          "python",  "solutions"),
+    # LeetCode problems with editorial-style explanations
+    ("greengerong/leetcode",     "python",  "python"),
+]
+
+
+def _iter_novel_problems(tokenizer) -> Iterator[list[int]]:
+    """
+    Stream novel problem datasets (competitive programming, LeetCode, APPS).
+    These are interleaved 1:4 with raw code to inject problem-solving structure
+    without overwhelming the code pretraining signal.
+    """
+    from datasets import load_dataset
+
+    def _encode(text: str) -> list[int]:
+        text = text.strip()
+        if not text:
+            return []
+        return tokenizer.encode(text, add_special_tokens=False)
+
+    for dataset_id, split_or_lang, field in NOVEL_PROBLEM_DATASETS:
+        try:
+            if dataset_id == "deepmind/code_contests":
+                ds = load_dataset(dataset_id, split="train", streaming=True, trust_remote_code=True)
+                for item in ds:
+                    # Format: problem description + solutions
+                    problem = item.get("description", "") or ""
+                    solutions = item.get("solutions", {})
+                    py_sols = solutions.get("solution", []) if isinstance(solutions, dict) else []
+                    if not problem.strip():
+                        continue
+                    text = f"# Competitive Programming Problem\n\"\"\"\n{problem}\n\"\"\"\n"
+                    if py_sols:
+                        text += f"\n# Solution:\n{py_sols[0]}\n"
+                    ids = _encode(text)
+                    if ids:
+                        yield ids
+
+            elif dataset_id == "codeparrot/apps":
+                ds = load_dataset(dataset_id, split="train", streaming=True, trust_remote_code=True)
+                for item in ds:
+                    problem = item.get("problem_id", "")
+                    question = item.get("question", "") or ""
+                    solutions_raw = item.get("solutions", "") or ""
+                    if not question.strip():
+                        continue
+                    try:
+                        import json as _json
+                        sols = _json.loads(solutions_raw) if solutions_raw else []
+                        sol_text = sols[0] if sols else ""
+                    except Exception:
+                        sol_text = ""
+                    text = f"# APPS Problem\n\"\"\"\n{question}\n\"\"\"\n"
+                    if sol_text:
+                        text += f"\n# Solution:\n{sol_text}\n"
+                    ids = _encode(text)
+                    if ids:
+                        yield ids
+
+            elif dataset_id == "greengerong/leetcode":
+                ds = load_dataset(dataset_id, split="train", streaming=True, trust_remote_code=True)
+                for item in ds:
+                    title = item.get("title", "") or ""
+                    content = item.get("content", "") or ""
+                    solution = item.get(field, "") or ""  # field = "python"
+                    if not content.strip():
+                        continue
+                    text = f"# LeetCode: {title}\n\"\"\"\n{content}\n\"\"\"\n"
+                    if solution.strip():
+                        text += f"\n# Python Solution:\n{solution}\n"
+                    ids = _encode(text)
+                    if ids:
+                        yield ids
+
+        except Exception as e:
+            print(f"[DATA] Novel problems {dataset_id} failed: {e}", flush=True)
+
 
 def _iter_the_stack_lang(tokenizer, lang_name: str, data_dir: str, marker: str) -> Iterator[list[int]]:
     """Stream one language from bigcode/the-stack with a language marker prefix."""
@@ -114,25 +198,44 @@ def _make_lang_stream(tokenizer, lang_name: str, data_dir: str, marker: str) -> 
 
 def make_token_stream(tokenizer) -> Iterator[list[int]]:
     """
-    Round-robin interleave all languages so the model sees balanced multi-language data.
-    Kotlin is listed first to ensure it gets early exposure.
+    Round-robin interleave all languages + novel problem datasets.
+    Yields 4 code samples then 1 problem sample, cycling.
+    Novel problems (competitive programming, LeetCode, APPS) teach
+    problem-solving structure alongside raw code syntax.
     """
     print(f"[DATA] Streaming {len(LANGUAGES)} languages: {[l[0] for l in LANGUAGES]}", flush=True)
-    generators = [
+    print(f"[DATA] + novel problem datasets: {[d[0] for d in NOVEL_PROBLEM_DATASETS]}", flush=True)
+
+    code_gens = [
         _make_lang_stream(tokenizer, name, data_dir, marker)
         for name, data_dir, marker in LANGUAGES
     ]
-    # Round-robin: advance each generator one sample at a time
-    active = list(range(len(generators)))
-    while active:
+    problem_gen = _iter_novel_problems(tokenizer)
+
+    active_code = list(range(len(code_gens)))
+    code_count = 0
+
+    while active_code:
         next_active = []
-        for i in active:
+        for i in active_code:
             try:
-                yield next(generators[i])
+                yield next(code_gens[i])
+                code_count += 1
+                # Every 4 code samples, inject 1 problem sample
+                if code_count % 4 == 0:
+                    try:
+                        yield next(problem_gen)
+                    except StopIteration:
+                        # Restart novel problems — they're small datasets, cycle them
+                        problem_gen = _iter_novel_problems(tokenizer)
+                        try:
+                            yield next(problem_gen)
+                        except StopIteration:
+                            pass
                 next_active.append(i)
             except StopIteration:
                 print(f"[DATA] {LANGUAGES[i][0]} stream exhausted", flush=True)
-        active = next_active
+        active_code = next_active
 
 
 def chunk_stream(token_stream: Iterator[list[int]], seq_len: int) -> Iterator[torch.Tensor]:
@@ -202,19 +305,18 @@ def _save_checkpoint(
     return path
 
 
-def _upload_to_hf(local_path: Path, hf_token: str):
+def _upload_to_hf(local_path: Path, hf_token: str, hf_repo: str = "pgalyen1987/RS-Code-SSM-1.6B"):
     """Upload checkpoint to HF Hub if token is available."""
     try:
         from huggingface_hub import HfApi
         api = HfApi(token=hf_token)
-        repo_id = "pgalyen1987/RS-Code-SSM-1.6B"
         api.upload_file(
             path_or_fileobj=str(local_path),
-            path_in_repo="pretrain_checkpoint.pt",
-            repo_id=repo_id,
+            path_in_repo="training/pretrain_latest.pt",
+            repo_id=hf_repo,
             repo_type="model",
         )
-        print(f"[HF] Uploaded {local_path.name} → {repo_id}/pretrain_checkpoint.pt", flush=True)
+        print(f"[HF] Uploaded {local_path.name} → {hf_repo}/training/pretrain_latest.pt", flush=True)
     except Exception as e:
         print(f"[HF] Upload failed: {e}", flush=True)
 
@@ -235,9 +337,18 @@ def train(
     device: torch.device,
     resume_from: Optional[str],
     hf_token: str,
+    hf_repo: str = "pgalyen1987/RS-Code-SSM-1.6B",
+    time_limit_minutes: int = 0,   # 0 = no limit; >0 = stop gracefully after N minutes
 ):
     model.to(device)
     model.enable_gradient_checkpointing()
+
+    # fp16: halves weight+grad memory (3.3 GB each vs 6.6 GB) on T4.
+    use_amp = device.type == "cuda"
+    if use_amp:
+        model = model.to(torch.float16)
+        free, total = torch.cuda.mem_get_info(device)
+        print(f"[AMP] fp16 model. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     optimizer = Adafactor(
         model.parameters(),
@@ -251,12 +362,19 @@ def train(
     tokens_seen = 0
 
     if resume_from:
-        ckpt = torch.load(resume_from, map_location=device)
+        # Load to CPU: the fp32 checkpoint is 6+ GB; loading to GPU alongside
+        # the fp16 model + CUDA overhead would OOM the T4.
+        ckpt = torch.load(resume_from, map_location="cpu")
         model.load_state_dict(ckpt["model_state"])
-        optimizer.load_state_dict(ckpt["optimizer_state"])
+        # Skip optimizer state to save ~3 GB GPU memory; pretrain Adafactor
+        # re-warms quickly since LR is computed from tokens_seen.
         step = ckpt.get("step", 0)
         tokens_seen = ckpt.get("tokens_seen", 0)
-        print(f"[RESUME] Loaded from {resume_from} (step={step}, tokens_seen={tokens_seen:,})", flush=True)
+        del ckpt
+        torch.cuda.empty_cache()
+        print(f"[RESUME] Loaded model from {resume_from} (step={step}, tokens_seen={tokens_seen:,})", flush=True)
+
+    deadline = time.time() + time_limit_minutes * 60 if time_limit_minutes > 0 else None
 
     # Warmup: 1000 optimizer steps
     warmup_steps = 1000
@@ -289,17 +407,21 @@ def train(
     for batch in batches:
         if tokens_seen >= max_tokens:
             break
+        if deadline and time.time() >= deadline:
+            print(f"[PRETRAIN] Time limit reached ({time_limit_minutes} min). Saving and exiting.", flush=True)
+            break
 
         batch = batch.to(device)            # (B, seq_len+1)
         input_ids = batch[:, :-1]           # (B, seq_len)
         targets    = batch[:, 1:]           # (B, seq_len)
 
-        logits, aux_loss = model(input_ids)
+        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            logits, aux_loss = model(input_ids)
         if isinstance(aux_loss, torch.Tensor):
             aux_loss = aux_loss.mean()
         B, L, V = logits.shape
-        loss_ce = F.cross_entropy(logits.reshape(B * L, V), targets.reshape(B * L))
-        loss = loss_ce + 0.01 * aux_loss
+        loss_ce = F.cross_entropy(logits.float().reshape(B * L, V), targets.reshape(B * L))
+        loss = loss_ce + 0.01 * aux_loss.float()
         if isinstance(loss, torch.Tensor) and loss.dim() > 0:
             loss = loss.mean()
         loss = loss / grad_accum
@@ -343,7 +465,7 @@ def train(
                     output_dir, f"step_{step:06d}",
                 )
                 if hf_token:
-                    _upload_to_hf(ckpt_path, hf_token)
+                    _upload_to_hf(ckpt_path, hf_token, hf_repo)
 
     # Final save
     ckpt_path = _save_checkpoint(
@@ -351,7 +473,7 @@ def train(
         output_dir, "final",
     )
     if hf_token:
-        _upload_to_hf(ckpt_path, hf_token)
+        _upload_to_hf(ckpt_path, hf_token, hf_repo)
 
     print(f"[PRETRAIN] Done. Total tokens: {tokens_seen:,}  Steps: {step}", flush=True)
 
@@ -370,6 +492,8 @@ def main():
     parser.add_argument("--save-every",  type=int, default=1000)
     parser.add_argument("--resume",      default=None, help="Path to checkpoint to resume from (or empty string)")
     parser.add_argument("--device",      default=None, help="Device: cpu, cuda, cuda:0, etc.")
+    parser.add_argument("--hf-repo",     default="pgalyen1987/RS-Code-SSM-1.6B", help="HF model repo for checkpoint uploads")
+    parser.add_argument("--time-limit-minutes", type=int, default=0, help="Stop gracefully after N minutes (0=no limit)")
     args = parser.parse_args()
 
     # Treat empty string resume as None
@@ -410,6 +534,8 @@ def main():
         device=device,
         resume_from=resume,
         hf_token=hf_token,
+        hf_repo=args.hf_repo,
+        time_limit_minutes=args.time_limit_minutes,
     )
 
 
