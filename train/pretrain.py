@@ -52,19 +52,6 @@ from arch.config import ModelConfig700M, ModelConfig3B
 #   - TokenBender/code_instructions_122k_alpaca_style — broader coverage
 
 # (lang_name, stack_smol_name, starcoder_name, marker)
-LANGUAGES = [
-    # (lang_name, _reserved, _reserved, marker)
-    ("python",     "", "", "# Python\n"),
-    ("cpp",        "", "", "// C++\n"),
-    ("javascript", "", "", "// JavaScript\n"),
-    ("typescript", "", "", "// TypeScript\n"),
-    ("java",       "", "", "// Java\n"),
-    ("go",         "", "", "// Go\n"),
-    ("rust",       "", "", "// Rust\n"),
-    ("kotlin",     "", "", "// Kotlin\n"),
-]
-
-
 def _encode(tokenizer, text: str) -> list[int]:
     text = text.strip()
     if not text:
@@ -72,8 +59,30 @@ def _encode(tokenizer, text: str) -> list[int]:
     return tokenizer.encode(text, add_special_tokens=False)
 
 
+# Language markers injected by Magicoder stream
+_LANG_MARKERS = {
+    "Python": "# Python\n", "C++": "// C++\n", "JavaScript": "// JavaScript\n",
+    "TypeScript": "// TypeScript\n", "Java": "// Java\n", "Go": "// Go\n",
+    "Rust": "// Rust\n", "Kotlin": "// Kotlin\n",
+}
+
+# Human-readable source list for startup log
+CODE_SOURCES = [
+    "HuggingFaceTB/smollm-corpus (python-edu)",
+    "ise-uiuc/Magicoder-OSS-Instruct-75K (all languages)",
+    "theblackcat102/evol-codealpaca-v1 (fallback)",
+]
+
+NOVEL_PROBLEM_DATASETS = [
+    ("deepmind/code_contests", "train"),
+    ("greengerong/leetcode", "train"),
+    ("iamtarun/python_code_instructions_18k_alpaca", "train"),
+    ("TokenBender/code_instructions_122k_alpaca_style", "train"),
+]
+
+
 def _iter_smollm_python(tokenizer) -> Iterator[list[int]]:
-    """Python educational code: HuggingFaceTB/smollm-corpus python-edu (open, ~10B tokens)."""
+    """Python educational code: smollm-corpus python-edu (~10B tokens, open)."""
     from datasets import load_dataset
     marker_ids = tokenizer.encode("# Python\n", add_special_tokens=False)
     ds = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True)
@@ -84,79 +93,36 @@ def _iter_smollm_python(tokenizer) -> Iterator[list[int]]:
             yield marker_ids + ids
 
 
-def _iter_magicoder(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
-    """
-    ise-uiuc/Magicoder-OSS-Instruct-75K — open, multi-language, real GitHub code.
-    Filters by the 'lang' field to keep language streams separate.
-    Lang values in dataset: Python, C++, JavaScript, TypeScript, Java, Go, Rust, Kotlin, ...
-    """
+def _iter_magicoder_all(tokenizer) -> Iterator[list[int]]:
+    """All languages mixed — no per-language scan. Starts instantly."""
     from datasets import load_dataset
-    lang_map = {
-        "python": "Python", "cpp": "C++", "javascript": "JavaScript",
-        "typescript": "TypeScript", "java": "Java", "go": "Go",
-        "rust": "Rust", "kotlin": "Kotlin",
-    }
-    target_lang = lang_map.get(lang_name, lang_name.capitalize())
-    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
     ds = load_dataset("ise-uiuc/Magicoder-OSS-Instruct-75K", split="train", streaming=True)
     for item in ds:
-        if item.get("lang", "") != target_lang:
-            continue
+        lang = item.get("lang", "")
         problem = item.get("problem", "") or ""
         solution = item.get("solution", "") or ""
         if not solution.strip():
             continue
-        text = f"{marker}# Problem:\n{problem}\n\n# Solution:\n{solution}\n" if problem.strip() \
-               else f"{marker}{solution}\n"
+        marker = _LANG_MARKERS.get(lang, f"// {lang}\n")
+        text = f"{marker}# Problem:\n{problem}\n\n# Solution:\n{solution}\n" \
+               if problem.strip() else f"{marker}{solution}\n"
         ids = _encode(tokenizer, text)
         if ids:
             yield ids
 
 
-def _iter_evol_code(tokenizer, lang_name: str, marker: str) -> Iterator[list[int]]:
-    """
-    theblackcat102/evol-codealpaca-v1 — open, instruction+code, ~110K examples.
-    No language field — yield all (mixed lang, still useful for code pretraining).
-    Only used if no other source works.
-    """
+def _iter_evol_code_all(tokenizer) -> Iterator[list[int]]:
+    """Mixed-language fallback: evol-codealpaca-v1 (~110K examples, open)."""
     from datasets import load_dataset
-    marker_ids = tokenizer.encode(marker, add_special_tokens=False)
     ds = load_dataset("theblackcat102/evol-codealpaca-v1", split="train", streaming=True)
     for item in ds:
         instruction = item.get("instruction", "") or ""
         output = item.get("output", "") or ""
         if not output.strip():
             continue
-        ids = marker_ids + _encode(tokenizer, f"{instruction}\n{output}\n")
+        ids = _encode(tokenizer, f"{instruction}\n{output}\n")
         if ids:
             yield ids
-
-
-def _make_lang_stream(tokenizer, lang_name: str, _unused: str, marker: str) -> Iterator[list[int]]:
-    """
-    Try data sources in order for one language (all open, no access approval needed):
-      1. HuggingFaceTB/smollm-corpus python-edu   (Python only, ~billions of tokens)
-      2. ise-uiuc/Magicoder-OSS-Instruct-75K       (multi-lang, real GitHub code)
-      3. theblackcat102/evol-codealpaca-v1          (mixed-lang fallback)
-    """
-    candidates = []
-    if lang_name == "python":
-        candidates.append(("smollm-python-edu", lambda: _iter_smollm_python(tokenizer)))
-    candidates.append(("magicoder", lambda: _iter_magicoder(tokenizer, lang_name, marker)))
-    candidates.append(("evol-codealpaca", lambda: _iter_evol_code(tokenizer, lang_name, marker)))
-
-    for label, gen_fn in candidates:
-        try:
-            gen = gen_fn()
-            first = next(gen)
-            print(f"[DATA] {lang_name}: using {label}", flush=True)
-            yield first
-            yield from gen
-            return
-        except Exception as e:
-            print(f"[DATA] {lang_name}/{label} failed: {e}", flush=True)
-
-    print(f"[DATA] {lang_name}: all sources exhausted, skipping", flush=True)
 
 
 def _iter_novel_problems(tokenizer) -> Iterator[list[int]]:
@@ -231,44 +197,58 @@ NOVEL_PROBLEM_DATASETS = [
 
 def make_token_stream(tokenizer) -> Iterator[list[int]]:
     """
-    Round-robin interleave all languages + novel problem datasets.
-    Yields 4 code samples then 1 problem sample, cycling.
-    Novel problems (competitive programming, LeetCode, APPS) teach
-    problem-solving structure alongside raw code syntax.
+    Flat mixed-language code stream interleaved with novel problem datasets.
+
+    Sources are started immediately (no per-language probe scan):
+      1. smollm-corpus python-edu   — huge Python corpus, cycles indefinitely
+      2. Magicoder-OSS-Instruct-75K — all languages mixed, real GitHub code
+      3. evol-codealpaca-v1         — fallback if both above fail
+
+    Every 4 code samples → 1 problem sample (competitive programming / LeetCode).
     """
-    print(f"[DATA] Streaming {len(LANGUAGES)} languages: {[l[0] for l in LANGUAGES]}", flush=True)
-    print(f"[DATA] + novel problem datasets: {[d[0] for d in NOVEL_PROBLEM_DATASETS]}", flush=True)
+    print(f"[DATA] Code sources: {CODE_SOURCES}", flush=True)
+    print(f"[DATA] Problem datasets: {[d[0] for d in NOVEL_PROBLEM_DATASETS]}", flush=True)
 
-    code_gens = [
-        _make_lang_stream(tokenizer, name, stack_name, marker)
-        for name, stack_name, _sc_name, marker in LANGUAGES
+    # Build source generators — no next() probe, start streaming immediately
+    raw_sources = [
+        ("smollm-python-edu",  _iter_smollm_python(tokenizer)),
+        ("magicoder-all",      _iter_magicoder_all(tokenizer)),
+        ("evol-codealpaca",    _iter_evol_code_all(tokenizer)),
     ]
-    problem_gen = _iter_novel_problems(tokenizer)
+    # Wrap each so failures are caught per-item rather than failing the whole stream
+    import itertools
 
-    active_code = list(range(len(code_gens)))
+    def _safe(label, gen):
+        try:
+            for item in gen:
+                yield item
+        except Exception as e:
+            print(f"[DATA] {label} stream error: {e}", flush=True)
+
+    # Round-robin across sources; remove exhausted ones
+    active = [(label, _safe(label, gen)) for label, gen in raw_sources]
+    problem_gen = _iter_novel_problems(tokenizer)
     code_count = 0
 
-    while active_code:
+    while active:
         next_active = []
-        for i in active_code:
+        for label, gen in active:
             try:
-                yield next(code_gens[i])
+                yield next(gen)
                 code_count += 1
-                # Every 4 code samples, inject 1 problem sample
                 if code_count % 4 == 0:
                     try:
                         yield next(problem_gen)
                     except StopIteration:
-                        # Restart novel problems — they're small datasets, cycle them
                         problem_gen = _iter_novel_problems(tokenizer)
                         try:
                             yield next(problem_gen)
                         except StopIteration:
                             pass
-                next_active.append(i)
+                next_active.append((label, gen))
             except StopIteration:
-                print(f"[DATA] {LANGUAGES[i][0]} stream exhausted", flush=True)
-        active_code = next_active
+                print(f"[DATA] {label} exhausted", flush=True)
+        active = next_active
 
 
 def chunk_stream(token_stream: Iterator[list[int]], seq_len: int) -> Iterator[torch.Tensor]:
