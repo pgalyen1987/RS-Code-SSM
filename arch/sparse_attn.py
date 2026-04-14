@@ -205,7 +205,7 @@ class SparseAttention(nn.Module):
         scale = math.sqrt(d_head)
         attn = torch.matmul(Q, K.transpose(-2, -1)) / scale    # (B, H, L, total_kv)
         attn = attn + mask.unsqueeze(0).unsqueeze(0)
-        attn = F.softmax(attn, dim=-1)
+        attn = F.softmax(attn.float(), dim=-1).to(V.dtype)     # fp32 softmax, cast back
 
         out = torch.matmul(attn, V)                             # (B, H, L, dh)
         out = out.permute(0, 2, 1, 3).reshape(B, L, n_heads * d_head)

@@ -36,7 +36,7 @@ def ModelConfig700M() -> "ModelConfig":
         d_ffn=4096,
         vocab_size=152064,
         max_seq_len=32768,
-        recursion_depth=1,   # TRM-style recursion: set to 2 for inference, 1 for T4 training (OOM at depth=2)
+        recursion_depth=2,   # TRM-style recursion: depth=2 enabled now that model is fp16 (~3.3GB weights)
     )
 
 
