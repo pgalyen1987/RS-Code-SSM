@@ -197,58 +197,59 @@ NOVEL_PROBLEM_DATASETS = [
 
 def make_token_stream(tokenizer) -> Iterator[list[int]]:
     """
-    Flat mixed-language code stream interleaved with novel problem datasets.
+    Infinite cycling mixed-language code stream + novel problems.
 
-    Sources are started immediately (no per-language probe scan):
-      1. smollm-corpus python-edu   — huge Python corpus, cycles indefinitely
+    All three sources cycle (restart from scratch when exhausted) so
+    training never stalls regardless of dataset size vs token target:
+      1. smollm-corpus python-edu   — ~500M-1B Python tokens per pass
       2. Magicoder-OSS-Instruct-75K — all languages mixed, real GitHub code
-      3. evol-codealpaca-v1         — fallback if both above fail
+      3. evol-codealpaca-v1         — mixed-lang fallback
 
-    Every 4 code samples → 1 problem sample (competitive programming / LeetCode).
+    Every 4 code samples → 1 problem sample (competitive / LeetCode).
     """
-    print(f"[DATA] Code sources: {CODE_SOURCES}", flush=True)
+    print(f"[DATA] Code sources (cycling): {CODE_SOURCES}", flush=True)
     print(f"[DATA] Problem datasets: {[d[0] for d in NOVEL_PROBLEM_DATASETS]}", flush=True)
 
-    # Build source generators — no next() probe, start streaming immediately
-    raw_sources = [
-        ("smollm-python-edu",  _iter_smollm_python(tokenizer)),
-        ("magicoder-all",      _iter_magicoder_all(tokenizer)),
-        ("evol-codealpaca",    _iter_evol_code_all(tokenizer)),
+    # Factory functions so we can restart each source on exhaustion
+    source_factories = [
+        ("smollm-python-edu", lambda: _iter_smollm_python(tokenizer)),
+        ("magicoder-all",     lambda: _iter_magicoder_all(tokenizer)),
+        ("evol-codealpaca",   lambda: _iter_evol_code_all(tokenizer)),
     ]
-    # Wrap each so failures are caught per-item rather than failing the whole stream
-    import itertools
 
-    def _safe(label, gen):
-        try:
-            for item in gen:
-                yield item
-        except Exception as e:
-            print(f"[DATA] {label} stream error: {e}", flush=True)
-
-    # Round-robin across sources; remove exhausted ones
-    active = [(label, _safe(label, gen)) for label, gen in raw_sources]
-    problem_gen = _iter_novel_problems(tokenizer)
-    code_count = 0
-
-    while active:
-        next_active = []
-        for label, gen in active:
+    def _cycling(label, factory):
+        """Yield from source indefinitely, restarting when exhausted."""
+        cycle = 0
+        while True:
+            count = 0
             try:
-                yield next(gen)
-                code_count += 1
-                if code_count % 4 == 0:
-                    try:
-                        yield next(problem_gen)
-                    except StopIteration:
-                        problem_gen = _iter_novel_problems(tokenizer)
-                        try:
-                            yield next(problem_gen)
-                        except StopIteration:
-                            pass
-                next_active.append((label, gen))
-            except StopIteration:
-                print(f"[DATA] {label} exhausted", flush=True)
-        active = next_active
+                for item in factory():
+                    yield item
+                    count += 1
+                print(f"[DATA] {label} cycle {cycle} done ({count} docs), restarting", flush=True)
+            except Exception as e:
+                print(f"[DATA] {label} error at cycle {cycle} doc {count}: {e}", flush=True)
+            cycle += 1
+
+    # Round-robin across all cycling sources — never exhausted
+    gens = [(label, _cycling(label, fn)) for label, fn in source_factories]
+    problem_gen = _cycling("novel-problems", lambda: _iter_novel_problems(tokenizer))
+    code_count = 0
+    n = len(gens)
+    idx = 0
+
+    while True:
+        label, gen = gens[idx % n]
+        idx += 1
+        try:
+            yield next(gen)
+            code_count += 1
+            if code_count % 4 == 0:
+                yield next(problem_gen)
+        except StopIteration:
+            # Should never happen with _cycling, but just in case
+            print(f"[DATA] {label} unexpectedly stopped — this is a bug", flush=True)
+            break
 
 
 def chunk_stream(token_stream: Iterator[list[int]], seq_len: int) -> Iterator[torch.Tensor]:
