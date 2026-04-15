@@ -2,7 +2,7 @@
 Phase 1 pretraining on multi-language code from The Stack / GitHub Code.
 
 Streams data directly from HuggingFace — no local data required.
-Supports resuming across multiple Kaggle sessions.
+Supports resuming across multiple Kaggle sessions (default --save-every 10 so short runs still checkpoint).
 
 Languages: Python, C++, JavaScript, TypeScript, Java, Go, Rust, Kotlin
            (round-robin interleaving for balanced representation)
@@ -16,7 +16,7 @@ Usage:
         --batch-size 1 \
         --grad-accum 16 \
         --lr 1e-3 \
-        --save-every 1000 \
+        --save-every 10 \
         --device cuda
 """
 
@@ -24,6 +24,7 @@ import argparse
 import math
 import os
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -385,7 +386,8 @@ def train(
         step = ckpt.get("step", 0)
         tokens_seen = ckpt.get("tokens_seen", 0)
         del ckpt
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         print(f"[RESUME] Loaded model from {resume_from} (step={step}, tokens_seen={tokens_seen:,})", flush=True)
 
     deadline = time.time() + time_limit_minutes * 60 if time_limit_minutes > 0 else None
@@ -429,7 +431,12 @@ def train(
         input_ids = batch[:, :-1]           # (B, seq_len)
         targets    = batch[:, 1:]           # (B, seq_len)
 
-        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+        amp_ctx = (
+            torch.amp.autocast("cuda", dtype=torch.float16)
+            if use_amp
+            else nullcontext()
+        )
+        with amp_ctx:
             logits, aux_loss = model(input_ids)
         if isinstance(aux_loss, torch.Tensor):
             aux_loss = aux_loss.mean()
@@ -503,7 +510,12 @@ def main():
     parser.add_argument("--grad-accum",  type=int, default=16)
     parser.add_argument("--lr",          type=float, default=1e-3)
     parser.add_argument("--seq-len",     type=int, default=1024)
-    parser.add_argument("--save-every",  type=int, default=1000)
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=10,
+        help="Save locally and upload to HF (if HF_TOKEN) every N optimizer steps. Default 10 for slow runs so progress is not lost.",
+    )
     parser.add_argument("--resume",      default=None, help="Path to checkpoint to resume from (or empty string)")
     parser.add_argument("--device",      default=None, help="Device: cpu, cuda, cuda:0, etc.")
     parser.add_argument("--hf-repo",     default="pgalyen1987/RS-Code-SSM-1.6B", help="HF model repo for checkpoint uploads")
@@ -515,6 +527,12 @@ def main():
 
     if args.device:
         device = torch.device(args.device)
+        if device.type == "cuda" and not torch.cuda.is_available():
+            print(
+                "[WARN] --device requests CUDA but this PyTorch build has no CUDA; using CPU.",
+                flush=True,
+            )
+            device = torch.device("cpu")
     elif torch.cuda.is_available():
         device = torch.device("cuda")
     else:
