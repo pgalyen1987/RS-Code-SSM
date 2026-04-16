@@ -480,7 +480,8 @@ def train(
                 t0 = time.time()
                 tokens_at_last_log = tokens_seen
 
-            if step % save_every == 0:
+            # Save at step 1 (first optimizer step) so slow CPU/GPU runs checkpoint before save_every
+            if step >= 1 and (step == 1 or step % save_every == 0):
                 ckpt_path = _save_checkpoint(
                     model, optimizer, model_cfg, step, tokens_seen,
                     output_dir, f"step_{step:06d}",
