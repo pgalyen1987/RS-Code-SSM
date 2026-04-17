@@ -44,7 +44,7 @@ from arch.config import ModelConfig700M, ModelConfig3B
 #  Raw code (~80% of tokens):
 #   1. bigcode/the-stack-smol  — 10B token deduplicated subset, openly accessible
 #   2. bigcode/starcoderdata   — StarCoder training data (per-language configs)
-#   3. HuggingFaceTB/smollm-corpus (python-edu) — Python fallback
+#   3. HuggingFaceTB/smollm-corpus (cosmopedia-v2) — has inline `text` (python-edu has only blob_id; needs S3)
 #
 #  Novel problems (~20% of tokens, 1 per 4 code samples):
 #   - deepmind/code_contests   — competitive programming + solutions
@@ -69,7 +69,7 @@ _LANG_MARKERS = {
 
 # Human-readable source list for startup log
 CODE_SOURCES = [
-    "HuggingFaceTB/smollm-corpus (python-edu)",
+    "HuggingFaceTB/smollm-corpus (cosmopedia-v2, text)",
     "ise-uiuc/Magicoder-OSS-Instruct-75K (all languages)",
     "theblackcat102/evol-codealpaca-v1 (fallback)",
 ]
@@ -82,11 +82,17 @@ NOVEL_PROBLEM_DATASETS = [
 ]
 
 
-def _iter_smollm_python(tokenizer) -> Iterator[list[int]]:
-    """Python educational code: smollm-corpus python-edu (~10B tokens, open)."""
+def _iter_smollm_cosmopedia(tokenizer) -> Iterator[list[int]]:
+    """
+    SmolLM cosmopedia-v2: synthetic educational text with an inline `text` field.
+
+    Do NOT use config `python-edu` here: it only has blob_id/repo metadata; actual code
+    must be fetched from Software Heritage S3 (see dataset README), so streaming yields
+    no usable text without a separate download step.
+    """
     from datasets import load_dataset
-    marker_ids = tokenizer.encode("# Python\n", add_special_tokens=False)
-    ds = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True)
+    marker_ids = tokenizer.encode("# SmolLM cosmopedia-v2\n", add_special_tokens=False)
+    ds = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True)
     for sample in ds:
         content = sample.get("text", "") or ""
         ids = _encode(tokenizer, content)
@@ -202,7 +208,7 @@ def make_token_stream(tokenizer) -> Iterator[list[int]]:
 
     All three sources cycle (restart from scratch when exhausted) so
     training never stalls regardless of dataset size vs token target:
-      1. smollm-corpus python-edu   — ~500M-1B Python tokens per pass
+      1. smollm-corpus cosmopedia-v2 — synthetic educational text (inline `text`)
       2. Magicoder-OSS-Instruct-75K — all languages mixed, real GitHub code
       3. evol-codealpaca-v1         — mixed-lang fallback
 
@@ -213,9 +219,9 @@ def make_token_stream(tokenizer) -> Iterator[list[int]]:
 
     # Factory functions so we can restart each source on exhaustion
     source_factories = [
-        ("smollm-python-edu", lambda: _iter_smollm_python(tokenizer)),
-        ("magicoder-all",     lambda: _iter_magicoder_all(tokenizer)),
-        ("evol-codealpaca",   lambda: _iter_evol_code_all(tokenizer)),
+        ("smollm-cosmopedia-v2", lambda: _iter_smollm_cosmopedia(tokenizer)),
+        ("magicoder-all", lambda: _iter_magicoder_all(tokenizer)),
+        ("evol-codealpaca", lambda: _iter_evol_code_all(tokenizer)),
     ]
 
     def _cycling(label, factory):
