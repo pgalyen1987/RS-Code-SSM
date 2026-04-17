@@ -2,7 +2,7 @@
 Phase 1 pretraining on multi-language code from The Stack / GitHub Code.
 
 Streams data directly from HuggingFace — no local data required.
-Supports resuming across multiple Kaggle sessions (default --save-every 10 so short runs still checkpoint).
+Supports resuming across multiple Kaggle sessions (default --save-every 5 so short runs still checkpoint).
 
 Languages: Python, C++, JavaScript, TypeScript, Java, Go, Rust, Kotlin
            (round-robin interleaving for balanced representation)
@@ -16,7 +16,7 @@ Usage:
         --batch-size 1 \
         --grad-accum 16 \
         --lr 1e-3 \
-        --save-every 10 \
+        --save-every 5 \
         --device cuda
 """
 
@@ -324,6 +324,13 @@ def _upload_to_hf(local_path: Path, hf_token: str, hf_repo: str = "pgalyen1987/R
     """Upload checkpoint to HF Hub if token is available."""
     try:
         from huggingface_hub import HfApi
+
+        sz_gb = local_path.stat().st_size / (1024**3)
+        print(
+            f"[HF] Starting upload: {local_path.name} ({sz_gb:.2f} GiB) → "
+            f"{hf_repo}/training/pretrain_latest.pt (may take several minutes)…",
+            flush=True,
+        )
         api = HfApi(token=hf_token)
         api.upload_file(
             path_or_fileobj=str(local_path),
@@ -331,7 +338,7 @@ def _upload_to_hf(local_path: Path, hf_token: str, hf_repo: str = "pgalyen1987/R
             repo_id=hf_repo,
             repo_type="model",
         )
-        print(f"[HF] Uploaded {local_path.name} → {hf_repo}/training/pretrain_latest.pt", flush=True)
+        print(f"[HF] Upload finished successfully.", flush=True)
     except Exception as e:
         print(f"[HF] Upload failed: {e}", flush=True)
 
@@ -514,8 +521,8 @@ def main():
     parser.add_argument(
         "--save-every",
         type=int,
-        default=10,
-        help="Save locally and upload to HF (if HF_TOKEN) every N optimizer steps. Default 10 for slow runs so progress is not lost.",
+        default=5,
+        help="Save locally and upload to HF (if HF_TOKEN) every N optimizer steps. Default 5.",
     )
     parser.add_argument("--resume",      default=None, help="Path to checkpoint to resume from (or empty string)")
     parser.add_argument("--device",      default=None, help="Device: cpu, cuda, cuda:0, etc.")
@@ -551,7 +558,18 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[INFO] Model: {args.model_size}  params={n_params:,} ({n_params/1e9:.2f}B)", flush=True)
 
-    hf_token = os.environ.get("HF_TOKEN", "")
+    hf_token = (os.environ.get("HF_TOKEN") or "").strip()
+
+    if hf_token:
+        print(
+            f"[HF] Token present — will upload checkpoints to {args.hf_repo}/training/pretrain_latest.pt",
+            flush=True,
+        )
+    else:
+        print(
+            "[HF] HF_TOKEN not set — checkpoints are saved only under --output-dir (no Hub upload).",
+            flush=True,
+        )
 
     train(
         model=model,

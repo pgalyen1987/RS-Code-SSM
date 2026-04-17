@@ -2,7 +2,8 @@
 Pick the best local pretrain checkpoint under checkpoints/pretrain/.
 
 `pretrain_step_*.pt` in the output root is preferred (highest step in filename).
-Also considers pretrain_final.pt and training/pretrain_latest.pt (HF cache layout).
+Also considers pretrain_final.pt, legacy pretrain_checkpoint.pt (old Hub name),
+and training/pretrain_latest.pt (matches train.pretrain Hub uploads).
 """
 
 from __future__ import annotations
@@ -46,6 +47,12 @@ def find_best_pretrain_checkpoint(
         fin = pretrain_dir / "pretrain_final.pt"
         if fin.is_file():
             best_path = fin
+
+    # Legacy Hub / notebook name (repo root), same format as pretrain_step_*.pt
+    if best_path is None:
+        legacy = pretrain_dir / "pretrain_checkpoint.pt"
+        if legacy.is_file():
+            best_path = legacy
 
     if best_path is None:
         hub_mirror = pretrain_dir / "training" / "pretrain_latest.pt"
