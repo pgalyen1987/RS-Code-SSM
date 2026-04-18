@@ -390,15 +390,17 @@ def train(
     tokens_seen = 0
 
     if resume_from:
-        # Load to CPU: the fp32 checkpoint is 6+ GB; loading to GPU alongside
-        # the fp16 model + CUDA overhead would OOM the T4.
-        ckpt = torch.load(resume_from, map_location="cpu")
-        model.load_state_dict(ckpt["model_state"])
-        # Skip optimizer state to save ~3 GB GPU memory; pretrain Adafactor
-        # re-warms quickly since LR is computed from tokens_seen.
+        # Load to CPU first to avoid OOM alongside fp16 model on GPU.
+        ckpt = torch.load(resume_from, map_location="cpu", weights_only=False)
+        # Cast saved weights to current model dtype (handles fp32↔fp16 mismatches).
+        model_dtype = next(model.parameters()).dtype
+        state = {k: v.to(model_dtype) if isinstance(v, torch.Tensor) else v
+                 for k, v in ckpt["model_state"].items()}
+        model.load_state_dict(state, strict=True)
+        # Skip optimizer state: saves ~3 GB GPU; Adafactor re-warms quickly.
         step = ckpt.get("step", 0)
         tokens_seen = ckpt.get("tokens_seen", 0)
-        del ckpt
+        del ckpt, state
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         print(f"[RESUME] Loaded model from {resume_from} (step={step}, tokens_seen={tokens_seen:,})", flush=True)
@@ -416,16 +418,15 @@ def train(
         progress = (s - warmup_steps) / max(total_opt_steps - warmup_steps, 1)
         return lr * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
 
-    # How many chunks to skip on resume
-    tokens_per_chunk = seq_len + 1
-    chunks_seen = tokens_seen // tokens_per_chunk
-
     print(f"[PRETRAIN] max_tokens={max_tokens:,}  batch={batch_size}  grad_accum={grad_accum}  lr={lr}  seq_len={seq_len}", flush=True)
     print(f"[PRETRAIN] Starting from step={step}, tokens_seen={tokens_seen:,}", flush=True)
 
+    # Data always restarts from beginning — sources cycle infinitely so repeating
+    # some samples is fine. Seeking through HF streaming data to skip N chunks
+    # would require re-downloading shards, which hangs on Kaggle.
     token_gen = make_token_stream(tokenizer)
     chunks = chunk_stream(token_gen, seq_len)
-    batches = batched_chunks(chunks, batch_size, skip_chunks=chunks_seen * batch_size)
+    batches = batched_chunks(chunks, batch_size, skip_chunks=0)
 
     optimizer.zero_grad()
     accum_loss = 0.0
@@ -493,8 +494,7 @@ def train(
                 t0 = time.time()
                 tokens_at_last_log = tokens_seen
 
-            # Save at step 1 (first optimizer step) so slow CPU/GPU runs checkpoint before save_every
-            if step >= 1 and (step == 1 or step % save_every == 0):
+            if step % save_every == 0:
                 ckpt_path = _save_checkpoint(
                     model, optimizer, model_cfg, step, tokens_seen,
                     output_dir, f"step_{step:06d}",
