@@ -35,7 +35,7 @@ from transformers import AutoTokenizer
 from transformers.optimization import Adafactor
 
 from arch import CodingSSM
-from arch.config import ModelConfig700M, ModelConfig3B
+from arch.config import ModelConfig700M, ModelConfig3B, ModelConfigCPU
 
 
 # ─── Dataset ─────────────────────────────────────────────────────────────────
@@ -332,7 +332,7 @@ def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
     parser.add_argument("--output-dir", default="checkpoints/sft")
-    parser.add_argument("--model-size", default="700m", choices=["700m", "3b"])
+    parser.add_argument("--model-size", default="auto", choices=["auto", "cpu", "700m", "3b"])
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -393,10 +393,20 @@ def _main():
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    model_cfg = ModelConfig700M() if args.model_size == "700m" else ModelConfig3B()
+    # Auto-select model size: use CPU-safe config when no GPU available
+    model_size = args.model_size
+    if model_size == "auto":
+        model_size = "700m" if torch.cuda.is_available() else "cpu"
+    if model_size == "cpu":
+        model_cfg = ModelConfigCPU()
+        print("[INFO] No GPU detected — using CPU-compatible 150M config (seq_len will be capped at 512)", flush=True)
+    elif model_size == "700m":
+        model_cfg = ModelConfig700M()
+    else:
+        model_cfg = ModelConfig3B()
     model = CodingSSM(model_cfg)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[INFO] Model params: {n_params:,} ({n_params/1e9:.2f}B)")
+    print(f"[INFO] Model: {model_size}  params={n_params:,} ({n_params/1e9:.2f}B)", flush=True)
 
     if args.init_checkpoint:
         ckpt = torch.load(args.init_checkpoint, map_location=device)

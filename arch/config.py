@@ -2,6 +2,38 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def ModelConfigCPU() -> "ModelConfig":
+    """
+    ~150M parameter config for CPU training.
+    Fits in ~4 GB RAM (fp32 weights + gradients + Adafactor).
+    Same architecture as 700M — just smaller dims.
+    Trains at ~1-3 min/step on CPU; full SFT in a few hours.
+    """
+    return ModelConfig(
+        d_model=384,
+        d_inner=768,
+        n_layers=12,
+        n_heads=12,
+        d_head=64,
+        d_state=32,
+        n_groups=2,
+        chunk_size=128,
+        n_attn_heads=6,
+        d_attn_head=64,
+        attn_every_n=4,
+        attn_window=256,
+        n_shared_attn=1,
+        lora_rank=16,
+        n_experts=4,
+        max_active_experts=2,
+        min_active_experts=1,
+        d_ffn=1536,
+        vocab_size=152064,
+        max_seq_len=4096,
+        recursion_depth=1,   # no recursion on CPU — saves 2x activation memory
+    )
+
+
 def ModelConfig700M() -> "ModelConfig":
     """
     700M parameter config for architecture bringup (Stage 0).
