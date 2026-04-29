@@ -281,7 +281,9 @@ def _save(
     hf_path_in_repo: str = "training/sft_latest.pt",
     hf_token: Optional[str] = None,
 ):
-    path = output_dir / f"sft_{tag}.pt"
+    # Always write to a single file — overwrite previous checkpoint.
+    # No accumulation of sft_best/sft_step_*/sft_latest copies.
+    path = output_dir / "sft_latest.pt"
     raw = model.module if isinstance(model, nn.DataParallel) else model
     torch.save({
         "step": step,
@@ -290,21 +292,19 @@ def _save(
         "optimizer_state": optimizer.state_dict(),
         "model_config": model_cfg.__dict__,
     }, path)
-    print(f"[SAVE] {path}", flush=True)
+    print(f"[SAVE] {path}  step={step}  loss={best_loss:.4f}", flush=True)
 
-    if hf_repo and hf_path_in_repo:
+    # Delete any leftover multi-copy files from previous runs
+    for old in output_dir.glob("sft_step_*.pt"):
+        old.unlink(missing_ok=True)
+    for old in output_dir.glob("sft_best.pt"):
+        old.unlink(missing_ok=True)
+
+    if hf_repo and hf_token:
         from ssm.hf_checkpoint_sync import upload_checkpoint
-
         upload_checkpoint(path, hf_repo, hf_path_in_repo, hf_token)
-        # When SFT completes, also push a persistent "final" marker so a new
-        # Kaggle session can detect SFT is done and skip re-running it.
         if tag == "final":
             upload_checkpoint(path, hf_repo, "training/sft_final.pt", hf_token)
-
-    # Keep only last 3 step checkpoints
-    ckpts = sorted(output_dir.glob("sft_step_*.pt"), key=lambda p: p.stat().st_mtime)
-    for old in ckpts[:-3]:
-        old.unlink()
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
