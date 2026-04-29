@@ -231,24 +231,36 @@ def train(
                 accum_steps_done = 0
 
                 if global_step % log_every == 0:
-                    print(
-                        f"epoch={epoch+1} step={global_step:05d}/{total_steps} "
-                        f"loss={avg_loss:.4f} lr={current_lr:.2e}",
-                        flush=True,
-                    )
+                    if torch.cuda.is_available():
+                        free, total = torch.cuda.mem_get_info(device)
+                        print(
+                            f"epoch={epoch+1} step={global_step:05d}/{total_steps} "
+                            f"loss={avg_loss:.4f} lr={current_lr:.2e} "
+                            f"gpu={free/1e9:.1f}/{total/1e9:.1f}GB free",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"epoch={epoch+1} step={global_step:05d}/{total_steps} "
+                            f"loss={avg_loss:.4f} lr={current_lr:.2e}",
+                            flush=True,
+                        )
+
+                if global_step % 50 == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 if avg_loss < best_loss:
                     best_loss = avg_loss
-                    _save(
-                        model, optimizer, model_cfg, global_step, best_loss, output_dir, "best",
-                        hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
-                    )
 
+                # Save + HF upload only on save_every cadence — not on every best_loss
+                # improvement. Early training loss drops every few steps, causing
+                # constant 3 GB HF uploads that fill GPU memory.
                 if global_step % save_every == 0:
                     _save(
-                        model, optimizer, model_cfg, global_step, best_loss, output_dir, f"step_{global_step:05d}",
+                        model, optimizer, model_cfg, global_step, best_loss, output_dir, "latest",
                         hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
                     )
+                    torch.cuda.empty_cache()
 
     _save(
         model, optimizer, model_cfg, global_step, best_loss, output_dir, "final",

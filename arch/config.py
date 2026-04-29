@@ -68,7 +68,7 @@ def ModelConfig700M() -> "ModelConfig":
         d_ffn=4096,
         vocab_size=152064,
         max_seq_len=32768,
-        recursion_depth=2,   # TRM-style recursion: depth=2 enabled now that model is fp16 (~3.3GB weights)
+        recursion_depth=1,   # depth=1 for training (depth=2 OOMs once Adafactor state fills ~3GB); set to 2 at inference
     )
 
 
