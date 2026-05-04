@@ -37,7 +37,7 @@ def cmd_seed(quick: bool = False):
             "Transmission Control Protocol", "Computer security", "OWASP",
         ]
         pipeline.run(topics=quick_topics, max_sentences=20,
-                     include_web=False, save_after=True)
+                     include_web=False, include_official_docs=False, save_after=True)
     else:
         pipeline.run(save_after=True)
 

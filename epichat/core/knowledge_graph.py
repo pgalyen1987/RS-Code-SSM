@@ -237,8 +237,26 @@ class KnowledgeGraph:
             units_data = json.load(f)
         self.units = {uid: EpistemicUnit.from_dict(d) for uid, d in units_data.items()}
 
-        with open(f"{path}/graph.pkl", "rb") as f:
-            self.graph = pickle.load(f)
+        try:
+            with open(f"{path}/graph.pkl", "rb") as f:
+                self.graph = pickle.load(f)
+        except Exception as e:
+            # Older snapshots pickled graph while cwd used `core.*` imports — unpickle breaks off-repo.
+            print(
+                f"[KG] graph.pkl unreadable ({e!r}); rebuilding NetworkX graph from units.",
+                flush=True,
+            )
+            self.graph = nx.DiGraph()
+            for uid, eu in self.units.items():
+                self.graph.add_node(uid, data=eu)
+            for uid, eu in self.units.items():
+                for j_id in eu.justification:
+                    if j_id in self.units:
+                        self.graph.add_edge(j_id, uid, relation=RelationType.SUPPORTS.value)
+                for rel_type, rel_ids in eu.relations.items():
+                    for r_id in rel_ids:
+                        if r_id in self.units:
+                            self.graph.add_edge(uid, r_id, relation=rel_type)
 
         import faiss as _faiss
         self._faiss_index = _faiss.read_index(f"{path}/faiss.index")

@@ -1,5 +1,5 @@
 """
-Mass EU generation for EpiChat — targets 15,000+ EpistemicUnits.
+Mass EU generation for EpiChat — targets 15,000+ EpistemicUnits (use scripts/scale_epichat_graph.py toward ~100k).
 
 Coverage:
   Python, TypeScript, Kotlin, Solidity, Java, Rust, Go, C++
@@ -885,6 +885,35 @@ def main():
     print("  [Phase 1] Saving knowledge graph (units.json, faiss.index)...", flush=True)
     kg.save(EPICHAT_DATA)
     print("  [Phase 1] Save complete.\n", flush=True)
+
+    # ── Phase 1b: Official documentation (MDN, Node API HTML, React, Python docs, etc.) ──
+    skip_docs = os.environ.get("EPICHAT_SKIP_OFFICIAL_DOCS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if skip_docs:
+        print(
+            "=== Phase 1b: Official docs SKIPPED (EPICHAT_SKIP_OFFICIAL_DOCS set) ===\n",
+            flush=True,
+        )
+    else:
+        print(
+            "=== Phase 1b: Official docs (JavaScript, Node, React, Python, "
+            "C++, Java, Kotlin, C#) ===",
+            flush=True,
+        )
+        from epichat.seeding.official_docs_seeder import OfficialDocsSeeder
+
+        doc_seeder = OfficialDocsSeeder(kg)
+        n_doc = doc_seeder.seed(max_paragraphs_per_url=35)
+        total_added += n_doc
+        print(
+            f"  Added {n_doc} EUs from official documentation. Total: {len(kg.units)}\n",
+            flush=True,
+        )
+        kg.save(EPICHAT_DATA)
+        print("  [Phase 1b] Save complete.\n", flush=True)
 
     # ── Phase 2: LLM synthesis ────────────────────────────────────────────────
     print(f"=== Phase 2: LLM synthesis ({len(LLM_CONCEPTS)} concepts) ===", flush=True)

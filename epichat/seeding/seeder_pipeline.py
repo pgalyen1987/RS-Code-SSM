@@ -20,6 +20,7 @@ class SeedPipeline:
         topics: List[str] = None,
         max_sentences: int = 30,
         include_web: bool = True,
+        include_official_docs: bool = True,
         save_after: bool = True,
     ) -> int:
         total = 0
@@ -43,6 +44,13 @@ class SeedPipeline:
         if include_web:
             print("\n=== Phase 4: Trusted web sources ===")
             total += self.code.seed_web_sources()
+
+        # 5. Official vendor documentation (JS, Node, React, Python, C++, Java, Kotlin, C#)
+        if include_official_docs:
+            print("\n=== Phase 5: Official language & framework documentation ===")
+            from epichat.seeding.official_docs_seeder import OfficialDocsSeeder
+
+            total += OfficialDocsSeeder(self.kg).seed()
 
         print(f"\n=== Seeding complete — {total} EUs created ===")
         print(self.kg.stats())

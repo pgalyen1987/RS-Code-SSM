@@ -626,7 +626,7 @@ def grpo_loss(
             continue
 
         # Build full sequence: [prompt | generated]
-        full_ids = torch.cat([prompt_ids[0], gen_ids.to(device)]).unsqueeze(0)  # (1, L)
+        full_ids = torch.cat([prompt_ids[0].to(device), gen_ids.to(device)]).unsqueeze(0)  # (1, L)
 
         # Forward pass (current policy)
         with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
