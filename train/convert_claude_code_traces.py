@@ -36,7 +36,7 @@ def _build_chatml(system: str, messages: list[dict], gitdiff: str = "") -> str:
     return "\n".join(parts)
 
 
-def convert(output_path: str = "data/claude_code_traces.jsonl", max_gitdiff_lines: int = 60) -> int:
+def convert(output_path: str = "data/claude_code_traces.jsonl", max_gitdiff_lines: int = 60, max_chatml_chars: int = 8000) -> int:
     from datasets import load_dataset
 
     ds = load_dataset("nlile/misc-merged-claude-code-traces-v1", split="train")
@@ -102,6 +102,10 @@ def convert(output_path: str = "data/claude_code_traces.jsonl", max_gitdiff_line
             if not chatml.strip():
                 skipped_no_content += 1
                 continue
+
+            # Trim to max_chatml_chars — trainer truncates to max_seq_len anyway
+            if len(chatml) > max_chatml_chars:
+                chatml = chatml[:max_chatml_chars]
 
             f.write(json.dumps({
                 "source": "claude_code_traces",
