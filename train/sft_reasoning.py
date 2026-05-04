@@ -138,6 +138,7 @@ def train(
     hf_repo: Optional[str] = None,
     hf_path_in_repo: str = "training/sft_latest.pt",
     hf_token: Optional[str] = None,
+    time_limit_minutes: Optional[int] = None,
 ):
     raw = model.module if isinstance(model, nn.DataParallel) else model
     raw.enable_gradient_checkpointing()
@@ -194,7 +195,12 @@ def train(
     accum_loss = 0.0
     accum_steps_done = 0
 
+    t_start = time.time()
+    deadline = t_start + time_limit_minutes * 60 if time_limit_minutes else None
+
     print(f"[SFT] {total_steps} optimizer steps, {epochs} epochs, lr={lr}, grad_accum={grad_accum}")
+    if deadline:
+        print(f"[SFT] Time limit: {time_limit_minutes} min (will save and exit cleanly at deadline)")
 
     for epoch in range(epochs):
         for batch_idx, batch in enumerate(dataloader):
@@ -261,6 +267,14 @@ def train(
                         hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
                     )
                     torch.cuda.empty_cache()
+
+                if deadline and time.time() >= deadline:
+                    print(f"[SFT] Time limit reached at step {global_step} — saving and exiting.", flush=True)
+                    _save(
+                        model, optimizer, model_cfg, global_step, best_loss, output_dir, "latest",
+                        hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
+                    )
+                    return
 
     _save(
         model, optimizer, model_cfg, global_step, best_loss, output_dir, "final",
@@ -351,6 +365,8 @@ def _main():
     parser.add_argument("--grad-accum", type=int, default=16)
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument("--save-every", type=int, default=500)
+    parser.add_argument("--time-limit-minutes", type=int, default=None,
+                        help="Stop training after this many minutes, saving a clean checkpoint.")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
     parser.add_argument(
         "--init-checkpoint",
@@ -465,6 +481,7 @@ def _main():
         hf_repo=args.hf_repo,
         hf_path_in_repo=args.hf_sft_path,
         hf_token=hf_tok,
+        time_limit_minutes=args.time_limit_minutes,
     )  # --init-checkpoint only loads weights; does not restore optimizer step
 
 
