@@ -954,12 +954,15 @@ def _main():
     model = CodingSSM(model_cfg).to(device)
     print(f"[INFO] Model params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
 
+    loaded_ckpt = None
     if args.checkpoint:
         # Load to CPU to avoid placing 6+ GB fp32 checkpoint on a 15.6 GB T4
         # alongside the fp16 model, gradients, and CUDA overhead.
         ckpt = torch.load(args.checkpoint, map_location="cpu")
         state = ckpt.get("model_state", ckpt)
         model.load_state_dict(state, strict=False)
+        # Keep metadata for GRPO resume; strip model weights to free CPU RAM
+        loaded_ckpt = {k: v for k, v in ckpt.items() if k != "model_state"}
         del ckpt
         torch.cuda.empty_cache()
         print(f"[INFO] Loaded checkpoint: {args.checkpoint}", flush=True)
