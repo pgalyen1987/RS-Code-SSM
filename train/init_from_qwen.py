@@ -31,8 +31,6 @@ def init_from_qwen(model, qwen_model_id: str = "Qwen/Qwen2.5-3B") -> dict:
     print(f"[INIT] Loading {qwen_model_id} (this downloads ~6 GB) ...", flush=True)
     qwen = AutoModel.from_pretrained(
         qwen_model_id,
-        torch_dtype=torch.float32,
-        device_map="cpu",
         trust_remote_code=True,
     )
     q = qwen.state_dict()
