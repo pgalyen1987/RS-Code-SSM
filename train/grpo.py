@@ -971,7 +971,7 @@ def _main():
     # Adafactor keeps fp32 second moments internally so optimizer is fine.
     if device.type == "cuda":
         model = model.to(torch.float16)
-        free, total = torch.cuda.mem_get_info(device)
+        free, total = torch.cuda.mem_get_info(device.index or 0)
         print(f"[INFO] fp16 model. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     # Reference model (frozen copy) — must match dtype of training model
