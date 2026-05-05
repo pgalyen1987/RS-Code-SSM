@@ -47,13 +47,24 @@ def init_from_qwen(model, qwen_model_id: str = "Qwen/Qwen2.5-3B") -> dict:
         dst.data.copy_(tiled.to(dst.dtype))
         report[name] = "tiled"
 
-    # 1. Token embeddings: [152064, 2048] — exact match
+    # 1. Token embeddings — copy overlapping vocab rows (handles vocab size mismatch)
     embed_key = "embed_tokens.weight"
-    if embed_key in q and q[embed_key].shape == model.embed.weight.shape:
-        _copy(model.embed.weight, q[embed_key], "embed")
+    if embed_key in q:
+        src = q[embed_key]   # (src_vocab, d_model)
+        dst = model.embed.weight
+        if src.shape == dst.shape:
+            _copy(dst, src, "embed")
+        elif src.shape[1] == dst.shape[1]:
+            # Partial copy: copy min(src_vocab, dst_vocab) rows
+            n = min(src.shape[0], dst.shape[0])
+            dst.data[:n].copy_(src[:n].to(dst.dtype))
+            report["embed"] = f"partial({n}/{dst.shape[0]})"
+            print(f"[INIT] Embed: copied {n}/{dst.shape[0]} vocab rows", flush=True)
+        else:
+            report["embed"] = "skipped"
+            print(f"[INIT] WARNING: embed d_model mismatch {src.shape} vs {dst.shape} — skipping", flush=True)
     else:
         report["embed"] = "skipped"
-        print(f"[INIT] WARNING: embed shape mismatch — skipping", flush=True)
 
     # 2. Final RMSNorm: [2048] — exact match
     norm_key = "norm.weight"
@@ -159,7 +170,7 @@ def freeze_base_weights(model) -> int:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="checkpoints/qwen_init.pt")
-    parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-3B")
+    parser.add_argument("--qwen-model", default="Qwen/Qwen2.5-Coder-3B")
     args = parser.parse_args()
 
     from arch.config import ModelConfig3B
