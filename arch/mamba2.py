@@ -20,6 +20,20 @@ import torch.nn.functional as F
 
 from .config import ModelConfig
 
+# Optional fast CUDA kernels (pip install mamba-ssm causal-conv1d)
+# Falls back to pure PyTorch automatically when unavailable (e.g. Kaggle CPU/T4).
+try:
+    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined as _mamba_fast_fn
+    _HAS_MAMBA_FAST = True
+except Exception:
+    _HAS_MAMBA_FAST = False
+
+try:
+    from causal_conv1d import causal_conv1d_fn as _causal_conv1d_fn
+    _HAS_CAUSAL_CONV = True
+except Exception:
+    _HAS_CAUSAL_CONV = False
+
 
 class RMSNorm(nn.Module):
     def __init__(self, d: int, eps: float = 1e-6):
@@ -232,9 +246,16 @@ class Mamba2Block(nn.Module):
 
         # --- Conv1d on X, B, C ---
         conv_in = torch.cat([X_raw, B_raw, C_raw], dim=-1)  # (B, L, conv_dim)
-        conv_in = conv_in.permute(0, 2, 1)                   # (B, conv_dim, L)
-        conv_out = self.conv1d(conv_in)[..., :L]             # causal: trim
-        conv_out = conv_out.permute(0, 2, 1)                 # (B, L, conv_dim)
+        conv_in_t = conv_in.permute(0, 2, 1)                 # (B, conv_dim, L)
+
+        if _HAS_CAUSAL_CONV and x.is_cuda:
+            # causal_conv1d_fn: no padding needed, handles causality natively
+            conv_weight = self.conv1d.weight.squeeze(1)      # (conv_dim, kernel_size)
+            conv_out_t = _causal_conv1d_fn(conv_in_t, conv_weight, self.conv1d.bias, activation=None)
+            conv_out = conv_out_t.permute(0, 2, 1)           # (B, L, conv_dim)
+        else:
+            conv_out = self.conv1d(conv_in_t)[..., :L].permute(0, 2, 1)
+
         conv_out = F.silu(self.conv_norm(conv_out))
 
         X_conv = conv_out[..., :d_inner]
@@ -259,14 +280,40 @@ class Mamba2Block(nn.Module):
 
         # --- SSD chunked scan ---
         initial_state = state.get('ssm_state') if state else None
-        Y, new_state = ssd_chunk_scan(
-            X_ssm, A, B_ssm, C_ssm,
-            chunk_size=self.config.chunk_size,
-            initial_state=initial_state,
-        )
+
+        if _HAS_MAMBA_FAST and x.is_cuda:
+            try:
+                # Fast Triton kernel: pass grouped B/C (before repeat_interleave),
+                # let the kernel handle head-expansion internally.
+                B_grp = B_conv.view(B, L, G, N)   # (B, L, G, N)
+                C_grp = C_conv.view(B, L, G, N)
+                # dt without softplus — kernel applies softplus when dt_softplus=True
+                dt_raw = F.linear(A_dt, self.dt_proj.weight)  # (B, L, H), no bias yet
+                Y_4d, new_ssm = _mamba_fast_fn(
+                    X_ssm,                          # (B, L, H, d_head)
+                    dt_raw,                         # (B, L, H)
+                    -torch.exp(self.A_log),         # (H,) negative log-decay
+                    B_grp,                          # (B, L, G, N)
+                    C_grp,                          # (B, L, G, N)
+                    chunk_size=self.config.chunk_size,
+                    dt_bias=self.dt_proj.bias,      # (H,)
+                    dt_softplus=True,
+                    initial_states=initial_state,   # (B, H, N, d_head) or None
+                    return_final_states=True,
+                )
+                Y = Y_4d.reshape(B, L, d_inner)
+                new_state = {'ssm_state': new_ssm}
+            except Exception:
+                # Kernel API mismatch — fall back silently
+                Y, new_ssm = ssd_chunk_scan(X_ssm, A, B_ssm, C_ssm, self.config.chunk_size, initial_state)
+                Y = Y.reshape(B, L, d_inner)
+                new_state = {'ssm_state': new_ssm}
+        else:
+            Y, new_ssm = ssd_chunk_scan(X_ssm, A, B_ssm, C_ssm, self.config.chunk_size, initial_state)
+            Y = Y.reshape(B, L, d_inner)
+            new_state = {'ssm_state': new_ssm}
 
         # --- Output ---
-        Y = Y.reshape(B, L, d_inner)
         Y = self.out_norm(Y)
         Y = Y * F.silu(gate)
         Y = self.out_proj(Y)
