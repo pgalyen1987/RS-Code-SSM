@@ -155,8 +155,9 @@ def train(
         free, total = torch.cuda.mem_get_info(device)
         print(f"[AMP] fp16 model + autocast enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = Adafactor(
-        model.parameters(),
+        trainable_params,
         lr=lr,
         relative_step=False,
         scale_parameter=False,
@@ -227,7 +228,7 @@ def train(
                 current_lr = get_lr(global_step)
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm)
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -373,6 +374,11 @@ def _main():
         default=None,
         help="Load model weights only (e.g. pretrain_checkpoint.pt), fresh optimizer — paper §4 after Phase 1 pretrain",
     )
+    parser.add_argument(
+        "--freeze-base",
+        action="store_true",
+        help="Freeze embed + shared attention base weights; train only LoRA adapters, Mamba-2 SSM, and FFN layers.",
+    )
     parser.add_argument("--device", default=None, help="Device: cpu, cuda, cuda:0, etc.")
     parser.add_argument(
         "--data-parallel",
@@ -437,12 +443,24 @@ def _main():
     print(f"[INFO] Model: {model_size}  params={n_params:,} ({n_params/1e9:.2f}B)", flush=True)
 
     if args.init_checkpoint:
-        ckpt = torch.load(args.init_checkpoint, map_location=device)
+        ckpt = torch.load(args.init_checkpoint, map_location="cpu")
         state = ckpt.get("model_state", ckpt)
         missing, unexpected = model.load_state_dict(state, strict=False)
+        del ckpt
         print(
             f"[INIT] Loaded weights from {args.init_checkpoint} "
             f"(missing_keys={len(missing)}, unexpected_keys={len(unexpected)})",
+            flush=True,
+        )
+
+    if args.freeze_base:
+        from train.init_from_qwen import freeze_base_weights
+        raw = model.module if isinstance(model, nn.DataParallel) else model
+        frozen = freeze_base_weights(raw)
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(
+            f"[FREEZE] Frozen {frozen:,} base params. "
+            f"Trainable: {trainable:,} ({trainable/1e9:.2f}B)",
             flush=True,
         )
 
