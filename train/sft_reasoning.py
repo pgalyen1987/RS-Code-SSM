@@ -152,7 +152,7 @@ def train(
     use_amp = device.type == "cuda"
     if use_amp:
         model = model.to(torch.float16)
-        free, total = torch.cuda.mem_get_info(device)
+        free, total = torch.cuda.mem_get_info(device.index or 0)
         print(f"[AMP] fp16 model + autocast enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -239,7 +239,7 @@ def train(
 
                 if global_step % log_every == 0:
                     if torch.cuda.is_available():
-                        free, total = torch.cuda.mem_get_info(device)
+                        free, total = torch.cuda.mem_get_info(device.index or 0)
                         print(
                             f"epoch={epoch+1} step={global_step:05d}/{total_steps} "
                             f"loss={avg_loss:.4f} lr={current_lr:.2e} "
