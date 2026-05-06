@@ -280,10 +280,21 @@ class Mamba2Block(nn.Module):
         dt = F.softplus(self.dt_proj(A_dt))                            # (B, L, H)
         A = A_log_base * dt                                            # (B, L, H)
 
-        # --- SSD chunked scan ---
+        # --- SSD chunked scan (or fast recurrent step for L=1 generation) ---
         initial_state = state.get('ssm_state') if state else None
 
-        if _HAS_MAMBA_FAST and x.is_cuda:
+        if L == 1 and initial_state is not None:
+            # Fast recurrent path for single-token generation steps.
+            # Avoids the chunk_size=256 padding overhead of ssd_chunk_scan.
+            # h_new = decay * h + B * x,  y = C * h_new
+            decay = torch.exp(A[:, 0, :])                          # (B, H)
+            h = initial_state                                       # (B, H, N, D)
+            h = h * decay[:, :, None, None]
+            h = h + torch.einsum('bhN,bhd->bhNd', B_ssm[:, 0], X_ssm[:, 0])
+            Y_step = torch.einsum('bhN,bhNd->bhd', C_ssm[:, 0], h)  # (B, H, D)
+            Y = Y_step.unsqueeze(1).reshape(B, 1, d_inner)
+            new_state = {'ssm_state': h}
+        elif _HAS_MAMBA_FAST and x.is_cuda:
             try:
                 # Fast Triton kernel: pass grouped B/C (before repeat_interleave),
                 # let the kernel handle head-expansion internally.
