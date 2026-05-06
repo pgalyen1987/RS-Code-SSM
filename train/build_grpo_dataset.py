@@ -20,7 +20,7 @@ from pathlib import Path
 
 def load_humaneval():
     from datasets import load_dataset
-    ds = load_dataset("openai_humaneval", split="test", trust_remote_code=True)
+    ds = load_dataset("openai_humaneval", split="test")
     records = []
     for ex in ds:
         prompt = ex["prompt"].strip()
@@ -37,7 +37,7 @@ def load_humaneval():
 
 def load_mbpp():
     from datasets import load_dataset
-    ds = load_dataset("mbpp", split="test", trust_remote_code=True)
+    ds = load_dataset("mbpp", split="test")
     records = []
     for ex in ds:
         prompt = ex["text"].strip()

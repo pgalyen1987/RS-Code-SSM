@@ -889,7 +889,7 @@ def main():
 
 def _main():
     parser = argparse.ArgumentParser(description="GRPO training for CodingSSM")
-    parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
+    parser.add_argument("--traces", default="data/grpo_problems.jsonl")
     parser.add_argument("--checkpoint", default=None, help="SFT checkpoint to start from")
     parser.add_argument("--output-dir", default="checkpoints/grpo")
     parser.add_argument("--model-size", default="700m", choices=["700m", "3b"])

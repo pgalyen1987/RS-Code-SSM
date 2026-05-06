@@ -320,8 +320,7 @@ class Mamba2Block(nn.Module):
 
         out = residual + Y
 
-        new_kv_state = {'ssm_state': new_state}
-        return out, new_kv_state
+        return out, new_state
 
 
 if __name__ == '__main__':
