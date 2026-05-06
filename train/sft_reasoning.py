@@ -139,6 +139,7 @@ def train(
     hf_path_in_repo: str = "training/sft_latest.pt",
     hf_token: Optional[str] = None,
     time_limit_minutes: Optional[int] = None,
+    stop_loss: Optional[float] = None,
 ):
     raw = model.module if isinstance(model, nn.DataParallel) else model
     raw.enable_gradient_checkpointing()
@@ -259,6 +260,14 @@ def train(
                 if avg_loss < best_loss:
                     best_loss = avg_loss
 
+                if stop_loss is not None and avg_loss <= stop_loss:
+                    print(f"[SFT] Loss {avg_loss:.4f} reached target {stop_loss} at step {global_step} — stopping early.", flush=True)
+                    _save(
+                        model, optimizer, model_cfg, global_step, best_loss, output_dir, "latest",
+                        hf_repo=hf_repo, hf_path_in_repo=hf_path_in_repo, hf_token=hf_token,
+                    )
+                    return
+
                 # Save + HF upload only on save_every cadence — not on every best_loss
                 # improvement. Early training loss drops every few steps, causing
                 # constant 3 GB HF uploads that fill GPU memory.
@@ -368,6 +377,12 @@ def _main():
     parser.add_argument("--save-every", type=int, default=500)
     parser.add_argument("--time-limit-minutes", type=int, default=None,
                         help="Stop training after this many minutes, saving a clean checkpoint.")
+    parser.add_argument("--stop-loss", type=float, default=None,
+                        help="Stop SFT early when rolling loss drops to this value (e.g. 0.3).")
+    parser.add_argument("--grpo-after", action="store_true",
+                        help="Automatically launch GRPO training after SFT completes.")
+    parser.add_argument("--grpo-traces", default="data/grpo_problems.jsonl")
+    parser.add_argument("--grpo-steps", type=int, default=2000)
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
     parser.add_argument(
         "--init-checkpoint",
@@ -500,7 +515,23 @@ def _main():
         hf_path_in_repo=args.hf_sft_path,
         hf_token=hf_tok,
         time_limit_minutes=args.time_limit_minutes,
+        stop_loss=args.stop_loss,
     )  # --init-checkpoint only loads weights; does not restore optimizer step
+
+    if args.grpo_after:
+        import subprocess
+        ckpt = str(Path(args.output_dir) / "sft_latest.pt")
+        cmd = [
+            sys.executable, "-m", "train.grpo",
+            "--model-size", args.model_size,
+            "--checkpoint", ckpt,
+            "--traces", args.grpo_traces,
+            "--max-steps", str(args.grpo_steps),
+            "--hf-repo", args.hf_repo or "",
+            "--hf-token", hf_tok or "",
+        ]
+        print(f"[SFT] Launching GRPO: {' '.join(cmd)}", flush=True)
+        subprocess.run(cmd)
 
 
 if __name__ == "__main__":
