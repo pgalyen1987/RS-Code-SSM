@@ -68,7 +68,7 @@ if pgrep -af "train.sft_reasoning" | grep -qv grep; then
   log "Phase 0: SFT done."
 fi
 
-SFT_V1=$(ls -t checkpoints/sft/*.pt 2>/dev/null | head -1)
+SFT_V1=$(ls -t checkpoints/sft_v2/*.pt checkpoints/sft/*.pt 2>/dev/null | head -1)
 if [ -z "$SFT_V1" ]; then
   log "ERROR: No SFT checkpoint found. Run train_sft_reasoning.sh first."
   exit 1
@@ -130,7 +130,7 @@ if [ ! -f "$SFT_V2" ]; then
   python -u -m train.sft_reasoning \
     --traces "$MERGED_V2" \
     --output-dir checkpoints/sft_v2 \
-    --model-size 700m \
+    --model-size 3b \
     --epochs 3 \
     --lr 2e-4 \
     --batch-size 1 \
@@ -156,13 +156,13 @@ GRPO_CKPT=$(ls -t checkpoints/grpo/*.pt 2>/dev/null | head -1)
 if [ -z "$GRPO_CKPT" ] || [ ! -f "$GRPO_CKPT" ]; then
   log "Starting GRPO from SFT v2 checkpoint…"
   python -u -m train.grpo \
-    --traces data/all_traces_v2.jsonl \
+    --traces data/grpo_problems.jsonl \
     --checkpoint "$SFT_CKPT" \
     --output-dir checkpoints/grpo \
-    --model-size 700m \
+    --model-size 3b \
     --group-size 8 \
     --lr 5e-6 \
-    --max-steps 3000 \
+    --max-steps 2000 \
     --kl-coeff 0.02 \
     --max-new-tokens 1024 \
     --temperature 0.8 \
@@ -233,7 +233,7 @@ for ITER in 1 2 3; do
     python -u -m train.sft_reasoning \
       --traces "$MERGED_ITER" \
       --output-dir "$ITER_DIR" \
-      --model-size 700m \
+      --model-size 3b \
       --epochs 2 \
       --lr 1e-4 \
       --batch-size 1 \
@@ -251,10 +251,10 @@ for ITER in 1 2 3; do
   if [ -z "$GRPO_ITER_CKPT" ]; then
     log "  GRPO iter $ITER…"
     python -u -m train.grpo \
-      --traces "$MERGED_ITER" \
+      --traces data/grpo_problems.jsonl \
       --checkpoint "$SFT_ITER" \
       --output-dir "$GRPO_ITER_DIR" \
-      --model-size 700m \
+      --model-size 3b \
       --group-size 8 \
       --lr 3e-6 \
       --max-steps 2000 \
