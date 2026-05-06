@@ -642,7 +642,7 @@ def grpo_loss(
 
         # Forward pass (current policy)
         with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            logits, _, _ = model(full_ids)
+            logits, _ = model(full_ids)
         L_prompt = prompt_ids.shape[1]
 
         # Slice generated portion
@@ -658,7 +658,7 @@ def grpo_loss(
         # KL penalty against reference model
         with torch.no_grad():
             with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-                ref_logits, _, _ = ref_model(full_ids)
+                ref_logits, _ = ref_model(full_ids)
             ref_logprobs = torch.log_softmax(
                 ref_logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :].float(), dim=-1
             )
