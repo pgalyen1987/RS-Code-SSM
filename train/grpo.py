@@ -559,53 +559,73 @@ def sample_rollouts(
     device: torch.device,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
-    Sample G rollouts from model. Returns:
+    Sample G rollouts in a single batched forward pass.
+
+    All G sequences share the same prompt, so the prompt is processed once
+    for the full batch. Each generation step runs batch=G in parallel, giving
+    ~G× better GPU utilization vs. the sequential loop.
+
+    Returns:
         rollout_ids: list[Tensor(L_i,)]  — generated token ids (excluding prompt)
         rollout_logprobs: list[Tensor(L_i,)]  — log-probs of each generated token
     """
     model.eval()
-    rollout_ids = []
-    rollout_logprobs = []
+    G = cfg.group_size
+    eos_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else tokenizer.pad_token_id
 
-    prompt_ids = prompt_ids.to(device)
+    # Process prompt once for all G rollouts simultaneously
+    prompt_batched = prompt_ids.expand(G, -1).to(device)        # (G, L_prompt)
+    logits, _aux, states = model(prompt_batched, states=None, return_states=True)
+    next_logits = logits[:, -1, :]                               # (G, V)
 
-    for _ in range(cfg.group_size):
-        generated = []
-        logprobs = []
+    # Pre-allocate output buffers on GPU — avoid per-token Python list appends
+    gen_buf  = torch.full((G, cfg.max_new_tokens), eos_id, dtype=torch.long, device=device)
+    lp_buf   = torch.zeros(G, cfg.max_new_tokens, device=device)
+    finished = torch.zeros(G, dtype=torch.bool, device=device)
+    seq_lens = torch.full((G,), cfg.max_new_tokens, dtype=torch.long, device=device)
 
-        # Reset SSM states via fresh forward
-        input_ids = prompt_ids.clone()
-        states = None
+    for step in range(cfg.max_new_tokens):
+        # Top-p sampling for all G at once — no per-token CPU sync
+        probs = torch.softmax(next_logits / cfg.temperature, dim=-1)   # (G, V)
+        sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
+        cum_probs = torch.cumsum(sorted_probs, dim=-1)
+        nucleus_mask = (cum_probs - sorted_probs) > cfg.top_p
+        sorted_probs = sorted_probs.masked_fill(nucleus_mask, 0.0)
+        sorted_probs = sorted_probs / sorted_probs.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        sampled_pos  = torch.multinomial(sorted_probs, 1)              # (G, 1)
+        next_tokens  = sorted_idx.gather(-1, sampled_pos).squeeze(-1)  # (G,)
 
-        for step in range(cfg.max_new_tokens):
-            logits, _aux_loss, states = model(
-                input_ids if step == 0 else input_ids[:, -1:],
-                states=states,
-                return_states=True,
-            )
-            next_logits = logits[:, -1, :]  # (1, V)
+        # Log-probs
+        lp = torch.log_softmax(next_logits, dim=-1)
+        token_lp = lp.gather(-1, next_tokens.unsqueeze(-1)).squeeze(-1)  # (G,)
 
-            # Top-p sampling
-            probs = torch.softmax(next_logits / cfg.temperature, dim=-1)
-            sorted_probs, sorted_idx = torch.sort(probs, descending=True)
-            cum_probs = torch.cumsum(sorted_probs, dim=-1)
-            mask = cum_probs - sorted_probs > cfg.top_p
-            sorted_probs[mask] = 0.0
-            sorted_probs /= sorted_probs.sum(dim=-1, keepdim=True)
-            next_token = sorted_idx.gather(-1, torch.multinomial(sorted_probs, 1))  # (1,1)
+        # Mask out already-finished sequences
+        next_tokens = next_tokens.masked_fill(finished, eos_id)
+        token_lp    = token_lp.masked_fill(finished, 0.0)
 
-            lp = torch.log_softmax(next_logits, dim=-1)
-            token_lp = lp.gather(-1, next_token).squeeze()  # scalar
+        gen_buf[:, step] = next_tokens
+        lp_buf[:, step]  = token_lp
 
-            generated.append(next_token.squeeze().item())
-            logprobs.append(token_lp)
+        # Track sequence lengths without CPU sync
+        just_finished = (~finished) & (next_tokens == eos_id)
+        seq_lens = torch.where(just_finished, torch.full_like(seq_lens, step + 1), seq_lens)
+        finished = finished | just_finished
 
-            input_ids = next_token
-            if next_token.item() in (tokenizer.eos_token_id,):
-                break
+        if finished.all():   # one sync per step, not per token
+            break
 
-        rollout_ids.append(torch.tensor(generated, dtype=torch.long))
-        rollout_logprobs.append(torch.stack(logprobs))
+        # One batched forward for all G — this is the key GPU utilisation win
+        logits, _aux, states = model(
+            next_tokens.unsqueeze(1),   # (G, 1)
+            states=states,
+            return_states=True,
+        )
+        next_logits = logits[:, 0, :]   # (G, V)
+
+    # Slice variable-length sequences back to CPU
+    lens = seq_lens.cpu().tolist()
+    rollout_ids      = [gen_buf[i, :lens[i]].cpu() for i in range(G)]
+    rollout_logprobs = [lp_buf[i, :lens[i]].cpu()  for i in range(G)]
 
     return rollout_ids, rollout_logprobs
 
