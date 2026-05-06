@@ -91,6 +91,9 @@ class GRPODataset(Dataset):
                 if not line:
                     continue
                 rec = json.loads(line)
+                # Normalise prompt field: some datasets use "question" or "instruction"
+                if not rec.get("prompt"):
+                    rec["prompt"] = rec.get("question") or rec.get("instruction") or ""
                 # Keep records with test code, known codealpaca source, or any
                 # record that has at least a prompt (multilingual datasets may
                 # not always supply test_code).
