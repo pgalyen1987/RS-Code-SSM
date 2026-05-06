@@ -571,7 +571,24 @@ def sample_rollouts(
     """
     model.eval()
     G = cfg.group_size
-    eos_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else tokenizer.pad_token_id
+
+    # Collect all Qwen stop token IDs: <|im_end|> (151645) and <|endoftext|> (151643)
+    stop_ids: set[int] = set()
+    for tok in ["<|im_end|>", "<|endoftext|>", "<|end_of_text|>"]:
+        tid = tokenizer.convert_tokens_to_ids(tok)
+        if tid is not None and tid != tokenizer.unk_token_id:
+            stop_ids.add(tid)
+    if tokenizer.eos_token_id is not None:
+        stop_ids.add(tokenizer.eos_token_id)
+    if tokenizer.pad_token_id is not None:
+        stop_ids.add(tokenizer.pad_token_id)
+    eos_id = min(stop_ids) if stop_ids else 0   # pad buffer with lowest stop id
+
+    # Build a GPU mask for fast stop-token detection (no Python set lookup per step)
+    stop_mask = torch.zeros(tokenizer.vocab_size, dtype=torch.bool, device=device)
+    for sid in stop_ids:
+        if 0 <= sid < tokenizer.vocab_size:
+            stop_mask[sid] = True
 
     # Process prompt once for all G rollouts simultaneously
     prompt_batched = prompt_ids.expand(G, -1).to(device)        # (G, L_prompt)
@@ -607,8 +624,9 @@ def sample_rollouts(
         gen_buf[:, step] = next_tokens
         lp_buf[:, step]  = token_lp
 
-        # Track sequence lengths without CPU sync
-        just_finished = (~finished) & (next_tokens == eos_id)
+        # Track sequence lengths using GPU stop-token mask
+        is_stop = stop_mask[next_tokens]                          # (G,) bool
+        just_finished = (~finished) & is_stop
         seq_lens = torch.where(just_finished, torch.full_like(seq_lens, step + 1), seq_lens)
         finished = finished | just_finished
 
@@ -631,6 +649,12 @@ def sample_rollouts(
     lens = seq_lens.cpu().tolist()
     rollout_ids      = [gen_buf[i, :lens[i]].cpu() for i in range(G)]
     rollout_logprobs = [lp_buf[i, :lens[i]].cpu()  for i in range(G)]
+
+    # Print a sample of rollout 0 so we can diagnose generation quality
+    sample_ids = rollout_ids[0].tolist()
+    sample_text = tokenizer.decode(sample_ids[:128], skip_special_tokens=False)
+    print(f"  [rollout] sample (first 128 tok): {repr(sample_text[:300])}", flush=True)
+    print(f"  [rollout] lens={lens}", flush=True)
 
     return rollout_ids, rollout_logprobs
 
