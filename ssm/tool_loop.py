@@ -27,6 +27,8 @@ import torch
 # ── Tool registry ─────────────────────────────────────────────────────────────
 
 class Tool:
+    """A single callable tool with a name, description, JSON schema, and implementation."""
+
     def __init__(self, name: str, description: str, parameters: dict, fn: Callable):
         self.name = name
         self.description = description
@@ -34,6 +36,7 @@ class Tool:
         self.fn = fn
 
     def schema(self) -> dict:
+        """Return the OpenAI-compatible tool schema dict."""
         return {"name": self.name, "description": self.description, "parameters": self.parameters}
 
     def __call__(self, **kwargs) -> str:
@@ -41,28 +44,36 @@ class Tool:
 
 
 class ToolRegistry:
+    """Registry of named tools available to the model during generation."""
+
     def __init__(self):
         self._tools: Dict[str, Tool] = {}
 
     def register(self, name: str, description: str, parameters: dict):
+        """Decorator to register a function as a tool."""
         def decorator(fn: Callable) -> Callable:
             self._tools[name] = Tool(name, description, parameters, fn)
             return fn
         return decorator
 
     def add(self, name: str, description: str, parameters: dict, fn: Callable):
+        """Register a tool imperatively (non-decorator form)."""
         self._tools[name] = Tool(name, description, parameters, fn)
 
     def get(self, name: str) -> Optional[Tool]:
+        """Look up a tool by name; returns None if not registered."""
         return self._tools.get(name)
 
     def names(self) -> List[str]:
+        """Return list of all registered tool names."""
         return list(self._tools.keys())
 
     def schemas(self) -> List[dict]:
+        """Return list of all tool schemas (for inclusion in system prompt)."""
         return [t.schema() for t in self._tools.values()]
 
     def schemas_json(self) -> str:
+        """Return all tool schemas as a formatted JSON string."""
         return json.dumps(self.schemas(), indent=2)
 
 

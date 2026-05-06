@@ -18,7 +18,8 @@ import json
 from pathlib import Path
 
 
-def load_humaneval():
+def load_humaneval() -> list[dict]:
+    """Download HumanEval (164 problems) and format as GRPO records with test_code."""
     from datasets import load_dataset
     ds = load_dataset("openai_humaneval", split="test")
     records = []
@@ -35,7 +36,8 @@ def load_humaneval():
     return records
 
 
-def load_mbpp():
+def load_mbpp() -> list[dict]:
+    """Download MBPP (~374 problems) and format as GRPO records with test_code."""
     from datasets import load_dataset
     ds = load_dataset("mbpp", split="test")
     records = []
@@ -52,6 +54,7 @@ def load_mbpp():
 
 
 def main():
+    """Download HumanEval + MBPP and write a GRPO-ready JSONL dataset with test_code fields."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/grpo_problems.jsonl")
     parser.add_argument("--no-humaneval", action="store_true")

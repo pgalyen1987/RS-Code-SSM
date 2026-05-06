@@ -36,6 +36,8 @@ except Exception:
 
 
 class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (no mean subtraction, learnable scale)."""
+
     def __init__(self, d: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps

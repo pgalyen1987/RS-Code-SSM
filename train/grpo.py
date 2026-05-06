@@ -48,6 +48,15 @@ from arch.config import ModelConfig, ModelConfig700M, ModelConfig3B
 
 @dataclass
 class GRPOConfig:
+    """
+    Hyperparameters for GRPO training.
+
+    Key knobs:
+      group_size      — G rollouts per problem; larger = lower variance reward estimates
+      kl_coeff        — β penalty keeping the policy close to the SFT reference
+      max_new_tokens  — generation budget per rollout (longer = more reasoning, slower)
+      lr              — very small vs SFT; policy gradient updates are noisy
+    """
     # GRPO hyperparameters
     group_size: int = 8          # G rollouts per problem
     kl_coeff: float = 0.04       # β — KL penalty against reference policy

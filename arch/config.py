@@ -1,3 +1,14 @@
+"""
+Model configuration for CodingSSM.
+
+Three preset configs are provided:
+  ModelConfigCPU()  — ~150M params, fits on CPU with 4 GB RAM
+  ModelConfig700M() — ~700M params, for architecture validation on Kaggle T4
+  ModelConfig3B()   — ~6.38B total / ~3B active params, primary training target
+
+All three share the same architecture (Mamba-2 + sparse attention + MoE + shared
+attention weights + LoRA); they differ only in hidden dimensions and expert counts.
+"""
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -79,6 +90,12 @@ def ModelConfig3B() -> "ModelConfig":
 
 @dataclass
 class ModelConfig:
+    """
+    Full architecture hyperparameters for CodingSSM.
+
+    Fields are grouped by subsystem. All three preset configs (CPU / 700M / 3B)
+    instantiate this class with different values; the defaults here are the 3B config.
+    """
     # Core dimensions
     d_model: int = 2048
     d_inner: int = 4096       # expand = 2 * d_model
@@ -127,16 +144,22 @@ class ModelConfig:
     kd_beta: float = 0.3      # weight on CE loss
     kd_temperature: float = 1.0
 
-    def attn_layer_indices(self):
-        """Return which layer indices (0-based) use attention instead of Mamba-2."""
+    def attn_layer_indices(self) -> list[int]:
+        """Return 0-based layer indices that use sparse attention instead of Mamba-2."""
         return [i for i in range(self.n_layers) if (i + 1) % self.attn_every_n == 0]
 
     def is_moe_layer(self, layer_idx: int) -> bool:
+        """Return True if this layer uses MoE FFN (even layers by default)."""
         return self.moe_on_even_layers and (layer_idx % 2 == 0)
 
     def expert_budget(self, layer_idx: int) -> int:
-        """Descending capacity schedule: earlier layers get more active experts."""
-        # Linearly decreasing from max to min across layers
+        """
+        Return the number of active experts for this layer.
+
+        Uses a descending capacity schedule: earlier layers activate more experts
+        (up to max_active_experts) and later layers fewer (down to min_active_experts).
+        This allocates more compute to early layers where token routing is most uncertain.
+        """
         frac = layer_idx / max(self.n_layers - 1, 1)
         budget = self.max_active_experts - frac * (self.max_active_experts - self.min_active_experts)
         return max(self.min_active_experts, round(budget))
