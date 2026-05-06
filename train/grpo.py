@@ -576,7 +576,7 @@ def sample_rollouts(
     # Process prompt once for all G rollouts simultaneously
     prompt_batched = prompt_ids.expand(G, -1).to(device)        # (G, L_prompt)
     logits, _aux, states = model(prompt_batched, states=None, return_states=True)
-    next_logits = logits[:, -1, :]                               # (G, V)
+    next_logits = logits[:, -1, :].float()                       # (G, V) — fp32 for stable softmax
 
     # Pre-allocate output buffers on GPU — avoid per-token Python list appends
     gen_buf  = torch.full((G, cfg.max_new_tokens), eos_id, dtype=torch.long, device=device)
@@ -584,8 +584,9 @@ def sample_rollouts(
     finished = torch.zeros(G, dtype=torch.bool, device=device)
     seq_lens = torch.full((G,), cfg.max_new_tokens, dtype=torch.long, device=device)
 
+    print(f"  [rollout] generating up to {cfg.max_new_tokens} tokens × G={G}...", flush=True)
     for step in range(cfg.max_new_tokens):
-        # Top-p sampling for all G at once — no per-token CPU sync
+        # Top-p sampling for all G at once — fp32 for numerical stability
         probs = torch.softmax(next_logits / cfg.temperature, dim=-1)   # (G, V)
         sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
         cum_probs = torch.cumsum(sorted_probs, dim=-1)
@@ -614,13 +615,17 @@ def sample_rollouts(
         if finished.all():   # one sync per step, not per token
             break
 
+        if step % 64 == 63:
+            n_done = finished.sum().item()
+            print(f"  [rollout] step {step+1}/{cfg.max_new_tokens}, {n_done}/{G} finished", flush=True)
+
         # One batched forward for all G — this is the key GPU utilisation win
         logits, _aux, states = model(
             next_tokens.unsqueeze(1),   # (G, 1)
             states=states,
             return_states=True,
         )
-        next_logits = logits[:, 0, :]   # (G, V)
+        next_logits = logits[:, 0, :].float()   # (G, V) — fp32 for stable softmax
 
     # Slice variable-length sequences back to CPU
     lens = seq_lens.cpu().tolist()
