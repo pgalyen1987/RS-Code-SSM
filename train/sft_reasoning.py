@@ -140,6 +140,7 @@ def train(
     hf_token: Optional[str] = None,
     time_limit_minutes: Optional[int] = None,
     stop_loss: Optional[float] = None,
+    min_steps: int = 0,
 ):
     raw = model.module if isinstance(model, nn.DataParallel) else model
     raw.enable_gradient_checkpointing()
@@ -260,7 +261,7 @@ def train(
                 if avg_loss < best_loss:
                     best_loss = avg_loss
 
-                if stop_loss is not None and avg_loss <= stop_loss:
+                if stop_loss is not None and avg_loss <= stop_loss and global_step >= min_steps:
                     print(f"[SFT] Loss {avg_loss:.4f} reached target {stop_loss} at step {global_step} — stopping early.", flush=True)
                     _save(
                         model, optimizer, model_cfg, global_step, best_loss, output_dir, "latest",
@@ -378,7 +379,9 @@ def _main():
     parser.add_argument("--time-limit-minutes", type=int, default=None,
                         help="Stop training after this many minutes, saving a clean checkpoint.")
     parser.add_argument("--stop-loss", type=float, default=None,
-                        help="Stop SFT early when rolling loss drops to this value (e.g. 0.3).")
+                        help="Stop SFT early when rolling loss drops to this value (e.g. 0.8).")
+    parser.add_argument("--min-steps", type=int, default=0,
+                        help="Minimum optimizer steps before --stop-loss can trigger (default 0).")
     parser.add_argument("--grpo-after", action="store_true",
                         help="Automatically launch GRPO training after SFT completes.")
     parser.add_argument("--grpo-traces", default="data/grpo_problems.jsonl")
@@ -516,6 +519,7 @@ def _main():
         hf_token=hf_tok,
         time_limit_minutes=args.time_limit_minutes,
         stop_loss=args.stop_loss,
+        min_steps=args.min_steps,
     )  # --init-checkpoint only loads weights; does not restore optimizer step
 
     if args.grpo_after:

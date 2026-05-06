@@ -669,42 +669,40 @@ def grpo_loss(
     advantages: torch.Tensor,  # (G,)
     cfg: GRPOConfig,
     device: torch.device,
-) -> torch.Tensor:
+    grad_accum_steps: int = 1,
+) -> float:
     """
-    Compute GRPO policy gradient loss + KL penalty.
+    Compute GRPO loss and immediately backward each rollout.
 
-    L = -mean_G [ Â_i * sum_t log π_θ(y_it|x,y_i<t) ]
-        + β * KL(π_θ || π_ref)
+    Backwarding per-rollout (instead of accumulating all G graphs then
+    backwarding once) keeps only one rollout's activations alive at a
+    time — critical for avoiding OOM on 80 GB H100 with long sequences.
+
+    Returns the scalar loss value for logging (gradients already applied).
     """
     model.train()
-    total_loss = torch.tensor(0.0, device=device)
-    kl_total = torch.tensor(0.0, device=device)
-    n_valid = 0
     use_amp = device.type == "cuda"
+    L_prompt = prompt_ids.shape[1]
 
-    for i, (gen_ids, adv) in enumerate(zip(rollout_ids, advantages)):
-        if len(gen_ids) == 0:
-            continue
+    # Count valid rollouts first so we can normalise correctly
+    valid = [(gen_ids, adv) for gen_ids, adv in zip(rollout_ids, advantages) if len(gen_ids) > 0]
+    if not valid:
+        return 0.0
 
-        # Build full sequence: [prompt | generated]
-        full_ids = torch.cat([prompt_ids[0].to(device), gen_ids.to(device)]).unsqueeze(0)  # (1, L)
+    n_valid = len(valid)
+    total_pg = 0.0
+    total_kl = 0.0
 
-        # Forward pass (current policy)
+    for gen_ids, adv in valid:
+        full_ids = torch.cat([prompt_ids[0].to(device), gen_ids.to(device)]).unsqueeze(0)
+
         with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
             logits, _ = model(full_ids)
-        L_prompt = prompt_ids.shape[1]
-
-        # Slice generated portion
-        gen_logits = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]  # (1, L_gen, V)
+        gen_logits   = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]
         gen_logprobs = torch.log_softmax(gen_logits.float(), dim=-1)
-        token_lp = gen_logprobs[0, torch.arange(len(gen_ids)), gen_ids.to(device)]  # (L_gen,)
-        seq_lp = token_lp.mean()  # mean over tokens
+        token_lp     = gen_logprobs[0, torch.arange(len(gen_ids)), gen_ids.to(device)]
+        seq_lp       = token_lp.mean()
 
-        # Policy gradient term
-        pg_loss = -adv * seq_lp
-        total_loss = total_loss + pg_loss
-
-        # KL penalty against reference model
         with torch.no_grad():
             with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 ref_logits, _ = ref_model(full_ids)
@@ -713,14 +711,18 @@ def grpo_loss(
             )
 
         kl = (torch.exp(gen_logprobs) * (gen_logprobs - ref_logprobs)).sum(dim=-1).mean()
-        kl_total = kl_total + kl
-        n_valid += 1
 
-    if n_valid == 0:
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        # Scale: 1 / (n_valid * grad_accum) — backward immediately to free graph
+        scale = 1.0 / (n_valid * grad_accum_steps)
+        rollout_loss = (-adv.to(device) * seq_lp + cfg.kl_coeff * kl) * scale
+        rollout_loss.backward()
 
-    loss = total_loss / n_valid + cfg.kl_coeff * kl_total / n_valid
-    return loss
+        total_pg += (-adv.item() * seq_lp.item())
+        total_kl += kl.item()
+        del logits, gen_logits, gen_logprobs, token_lp, seq_lp, ref_logits, ref_logprobs, rollout_loss
+        torch.cuda.empty_cache()
+
+    return total_pg / n_valid + cfg.kl_coeff * total_kl / n_valid
 
 
 # ─── Trainer ─────────────────────────────────────────────────────────────────
@@ -815,8 +817,8 @@ class GRPOTrainer:
         std_r = rewards_t.std() + 1e-8
         advantages = (rewards_t - rewards_t.mean()) / std_r
 
-        # 4. GRPO loss
-        loss = grpo_loss(
+        # 4. GRPO loss — backwars per-rollout inside grpo_loss to avoid OOM
+        loss_val = grpo_loss(
             self.model,
             self.ref_model,
             prompt_ids,
@@ -824,11 +826,10 @@ class GRPOTrainer:
             advantages,
             self.cfg,
             self.device,
+            grad_accum_steps=self.cfg.grad_accum_steps,
         )
-        loss = loss / self.cfg.grad_accum_steps
-        loss.backward()
 
-        return {"loss": loss.item() * self.cfg.grad_accum_steps, "mean_reward": mean_r, "rewards": rewards}
+        return {"loss": loss_val, "mean_reward": mean_r, "rewards": rewards}
 
     def run(self):
         dataloader = DataLoader(
