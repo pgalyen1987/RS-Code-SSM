@@ -899,6 +899,9 @@ class GRPOTrainer:
         accum_loss = 0.0
         accum_reward = 0.0
 
+        dataset_size = len(self.dataset)
+        logged_first_full_pass = False
+
         print(f"[GRPO] Starting training: {self.cfg.max_steps} steps, G={self.cfg.group_size}", flush=True)
 
         while self.step < self.cfg.max_steps:
@@ -906,6 +909,14 @@ class GRPOTrainer:
                 problem = next(data_iter)
             except StopIteration:
                 data_iter = iter(dataloader)
+                if not logged_first_full_pass:
+                    print(
+                        f"[GRPO] First full pass complete: "
+                        f"all {dataset_size} training problems seen once (shuffled). "
+                        f"(problem-steps completed: {self.step})",
+                        flush=True,
+                    )
+                    logged_first_full_pass = True
                 problem = next(data_iter)
 
             t0 = time.time()
