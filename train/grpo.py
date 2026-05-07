@@ -584,10 +584,13 @@ def sample_rollouts(
         stop_ids.add(tokenizer.pad_token_id)
     eos_id = min(stop_ids) if stop_ids else 0   # pad buffer with lowest stop id
 
-    # Build a GPU mask for fast stop-token detection (no Python set lookup per step)
-    stop_mask = torch.zeros(tokenizer.vocab_size, dtype=torch.bool, device=device)
+    # Build a GPU mask for fast stop-token detection (no Python set lookup per step).
+    # Use model vocab size (152064), not tokenizer.vocab_size (151936) — special tokens
+    # above 151936 are valid model outputs and must not cause index OOB.
+    vocab_size = model.config.vocab_size
+    stop_mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
     for sid in stop_ids:
-        if 0 <= sid < tokenizer.vocab_size:
+        if 0 <= sid < vocab_size:
             stop_mask[sid] = True
 
     # Process prompt with batch=1 to avoid O(G×L²) attention memory
