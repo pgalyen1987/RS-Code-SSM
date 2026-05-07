@@ -63,7 +63,7 @@ class GRPOConfig:
     reward_scale: float = 1.0    # scale raw rewards before normalization
 
     # Generation
-    max_new_tokens: int = 1024   # max tokens for student rollout
+    max_new_tokens: int = 512    # max tokens for student rollout
     temperature: float = 0.8
     top_p: float = 0.95
     think_budget: int = 512      # max tokens inside <think> (soft limit via reward shaping)
@@ -506,7 +506,7 @@ def build_prompt(problem: dict, language: str = "python") -> str:
     return (
         f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
+        f"<|im_start|>assistant\n<think>\n"
     )
 
 
@@ -814,7 +814,8 @@ class GRPOTrainer:
         # 2. Compute rewards
         rewards = []
         for gen_ids in rollout_ids:
-            text = self.tokenizer.decode(gen_ids.tolist(), skip_special_tokens=False)
+            # Prompt ends with "<think>\n" — prepend it so parse_response sees the full tag
+            text = "<think>\n" + self.tokenizer.decode(gen_ids.tolist(), skip_special_tokens=False)
             thinking, solution = parse_response(text, language=language)
             r = compute_reward(
                 solution,
