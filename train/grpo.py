@@ -590,10 +590,24 @@ def sample_rollouts(
         if 0 <= sid < tokenizer.vocab_size:
             stop_mask[sid] = True
 
-    # Process prompt once for all G rollouts simultaneously
-    prompt_batched = prompt_ids.expand(G, -1).to(device)        # (G, L_prompt)
-    logits, _aux, states = model(prompt_batched, states=None, return_states=True)
-    next_logits = logits[:, -1, :].float()                       # (G, V) — fp32 for stable softmax
+    # Process prompt with batch=1 to avoid O(G×L²) attention memory
+    logits_1, _aux, states_1 = model(prompt_ids.to(device), states=None, return_states=True)
+    next_logits_1 = logits_1[:, -1, :].float()  # (1, V)
+
+    # Expand states from batch=1 → batch=G for parallel generation
+    states = []
+    for s in states_1:
+        if s is None:
+            states.append(None)
+        elif 'ssm_state' in s:
+            states.append({'ssm_state': s['ssm_state'].expand(G, -1, -1, -1).contiguous()})
+        elif 'kv' in s:
+            k = s['kv']['k'].expand(G, -1, -1, -1).contiguous()
+            v = s['kv']['v'].expand(G, -1, -1, -1).contiguous()
+            states.append({'kv': {'k': k, 'v': v}})
+        else:
+            states.append(s)
+    next_logits = next_logits_1.expand(G, -1).contiguous()  # (G, V)
 
     # Pre-allocate output buffers on GPU — avoid per-token Python list appends
     gen_buf  = torch.full((G, cfg.max_new_tokens), eos_id, dtype=torch.long, device=device)
