@@ -67,6 +67,8 @@ class GRPOConfig:
     temperature: float = 0.8
     top_p: float = 0.95
     think_budget: int = 512      # max tokens inside <think> (soft limit via reward shaping)
+    rep_penalty: float = 1.3     # repetition penalty: divides logit of recently seen tokens
+    rep_window: int = 32         # how many recent tokens to penalise
 
     # Training
     lr: float = 5e-6
@@ -620,6 +622,14 @@ def sample_rollouts(
 
     print(f"  [rollout] generating up to {cfg.max_new_tokens} tokens × G={G}...", flush=True)
     for step in range(cfg.max_new_tokens):
+        # Repetition penalty: down-weight tokens seen in the recent window
+        if step > 0 and cfg.rep_penalty > 1.0:
+            w_start = max(0, step - cfg.rep_window)
+            window = gen_buf[:, w_start:step]                          # (G, W)
+            rep_mask = torch.zeros(G, vocab_size, dtype=torch.bool, device=device)
+            rep_mask.scatter_(1, window, torch.ones_like(window, dtype=torch.bool))
+            next_logits = torch.where(rep_mask, next_logits / cfg.rep_penalty, next_logits)
+
         # Top-p sampling for all G at once — fp32 for numerical stability
         probs = torch.softmax(next_logits / cfg.temperature, dim=-1)   # (G, V)
         sorted_probs, sorted_idx = torch.sort(probs, descending=True, dim=-1)
