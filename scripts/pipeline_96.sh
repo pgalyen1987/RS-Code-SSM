@@ -232,6 +232,7 @@ for ITER in 1 2 3; do
     log "  SFT iter $ITER…"
     python -u -m train.sft_reasoning \
       --traces "$MERGED_ITER" \
+      --init-checkpoint "$CURRENT_CKPT" \
       --output-dir "$ITER_DIR" \
       --model-size 3b \
       --epochs 2 \
