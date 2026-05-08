@@ -67,8 +67,8 @@ class GRPOConfig:
     temperature: float = 0.8
     top_p: float = 0.95
     think_budget: int = 512      # max tokens inside <think> (soft limit via reward shaping)
-    rep_penalty: float = 1.3     # repetition penalty: divides logit of recently seen tokens
-    rep_window: int = 32         # how many recent tokens to penalise
+    rep_penalty: float = 5.0     # repetition penalty: logit subtracted per occurrence in window
+    rep_window: int = 64         # how many recent tokens to penalise
 
     # Training
     lr: float = 5e-6
@@ -505,10 +505,16 @@ def build_prompt(problem: dict, language: str = "python") -> str:
     user_msg = problem["prompt"]
     if problem.get("test_code"):
         user_msg += f"\n\nYour solution must pass these tests:\n```{fence}\n{problem['test_code']}\n```"
+    # Force prefix past the structure the model struggles to generate from scratch.
+    # The model only needs to write the function body after this point.
+    if lang == "python" and problem.get("entry_point"):
+        code_prefix = f"```python\ndef {problem['entry_point']}("
+    else:
+        code_prefix = f"```{fence}\n"
     return (
         f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        f"<|im_start|>assistant\n<think>\n"
+        f"<|im_start|>assistant\n<think>\nI'll solve this step by step.\n</think>\n\n{code_prefix}"
     )
 
 
@@ -544,11 +550,22 @@ def parse_response(text: str, language: str = "python") -> tuple[str, str]:
         if code_m:
             break
 
-    # Fallback: any ``` block
+    # Fallback: any ``` block (closed)
     if not code_m:
         code_m = re.search(r"```\s*(.*?)```", text, re.DOTALL)
 
-    solution = code_m.group(1).strip() if code_m else ""
+    if code_m:
+        solution = code_m.group(1).strip()
+    else:
+        # Unclosed fence — model hit token limit; take everything after the opening fence
+        for fence in fence_variants + [""]:
+            pat = rf"```{fence}\s*" if fence else r"```\s*"
+            open_m = re.search(pat, text, re.IGNORECASE)
+            if open_m:
+                solution = text[open_m.end():].strip()
+                break
+        else:
+            solution = ""
     return thinking, solution
 
 
@@ -622,13 +639,16 @@ def sample_rollouts(
 
     print(f"  [rollout] generating up to {cfg.max_new_tokens} tokens × G={G}...", flush=True)
     for step in range(cfg.max_new_tokens):
-        # Repetition penalty: down-weight tokens seen in the recent window
-        if step > 0 and cfg.rep_penalty > 1.0:
+        # Repetition penalty: subtract cfg.rep_penalty logit units per occurrence in window.
+        # Division-based penalties are ineffective for high logits (15/1.3≈11.5 still dominates);
+        # subtraction is absolute and breaks fixed-point loops reliably.
+        if step > 0 and cfg.rep_penalty > 0.0:
             w_start = max(0, step - cfg.rep_window)
             window = gen_buf[:, w_start:step]                          # (G, W)
-            rep_mask = torch.zeros(G, vocab_size, dtype=torch.bool, device=device)
-            rep_mask.scatter_(1, window, torch.ones_like(window, dtype=torch.bool))
-            next_logits = torch.where(rep_mask, next_logits / cfg.rep_penalty, next_logits)
+            counts = torch.zeros(G, vocab_size, dtype=torch.float, device=device)
+            counts.scatter_add_(1, window,
+                                torch.ones(G, window.shape[1], dtype=torch.float, device=device))
+            next_logits = next_logits - counts * cfg.rep_penalty
 
         # Top-p sampling for all G at once — fp32 for numerical stability
         probs = torch.softmax(next_logits / cfg.temperature, dim=-1)   # (G, V)
@@ -824,8 +844,15 @@ class GRPOTrainer:
         # 2. Compute rewards
         rewards = []
         for gen_ids in rollout_ids:
-            # Prompt ends with "<think>\n" — prepend it so parse_response sees the full tag
-            text = "<think>\n" + self.tokenizer.decode(gen_ids.tolist(), skip_special_tokens=False)
+            # Prepend the forced prefix so parse_response sees the complete structure
+            lang = problem.get("language", "python").lower()
+            ep = problem.get("entry_point", "")
+            if lang == "python" and ep:
+                forced = f"<think>\nI'll solve this step by step.\n</think>\n\n```python\ndef {ep}("
+            else:
+                fence = "cpp" if lang in ("cpp", "c++") else lang
+                forced = f"<think>\nI'll solve this step by step.\n</think>\n\n```{fence}\n"
+            text = forced + self.tokenizer.decode(gen_ids.tolist(), skip_special_tokens=False)
             thinking, solution = parse_response(text, language=language)
             r = compute_reward(
                 solution,
@@ -984,7 +1011,7 @@ def _main():
     parser.add_argument("--lr", type=float, default=5e-6)
     parser.add_argument("--max-steps", type=int, default=2000)
     parser.add_argument("--kl-coeff", type=float, default=0.04)
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
+    parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--device", default=None, help="Device: cpu, cuda, cuda:0, etc.")
     parser.add_argument(

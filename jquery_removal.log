@@ -1,0 +1,22 @@
+2026-05-07 23:37:38,140 - Directory does not exist.
+2026-05-07 23:37:38,141 - Removed file: /fake/directory/jquery-1.js
+2026-05-07 23:37:38,142 - Removed file: /fake/directory/jquery-2.js
+2026-05-07 23:37:38,143 - Removed file: /fake/directory/jquery-ui.js
+2026-05-07 23:37:38,145 - Error removing file jquery-1.js: Permission denied
+2026-05-07 23:37:38,146 - Error removing file jquery-2.js: Permission denied
+2026-05-07 23:37:38,147 - Error removing file jquery-ui.js: Permission denied
+2026-05-07 23:37:38,149 - Removed file: /fake/directory/jquery-1.js
+2026-05-07 23:37:38,150 - Removed file: /fake/directory/jquery-2.min.js
+2026-05-07 23:37:38,151 - Removed file: /fake/directory/jquery-1.js
+2026-05-07 23:37:45,699 - INFO - Removed file: jquery-1.js
+2026-05-07 23:37:45,700 - INFO - Removed file: jquery-2.js
+2026-05-07 23:37:45,701 - INFO - Removed file: jquery-ui.js
+2026-05-07 23:37:45,705 - INFO - Removed file: jquery-1.js
+2026-05-07 23:37:45,706 - INFO - Removed file: jquery-2.min.js
+2026-05-07 23:37:45,707 - INFO - Removed file: jquery-1.js
+INFO:root:Removed: /fake/directory/jquery-1.js
+INFO:root:Removed: /fake/directory/jquery-2.js
+INFO:root:Removed: /fake/directory/jquery-ui.js
+INFO:root:Removed: /fake/directory/jquery-1.js
+INFO:root:Removed: /fake/directory/jquery-2.min.js
+INFO:root:Removed: /fake/directory/jquery-1.js
