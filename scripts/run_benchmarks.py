@@ -149,13 +149,18 @@ def generate(model, tokenizer, instruction: str, device, max_new_tokens: int = 7
     ids = build_prompt_ids(tokenizer, instruction).to(device)
     if hasattr(model, "generate"):
         try:
+            eos_id = tokenizer.eos_token_id
+            if eos_id is None:
+                eos_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
             out = model.generate(
                 ids,
                 max_new_tokens=max_new_tokens,
                 temperature=max(temperature, 1e-3),
                 top_p=0.95,
+                eos_token_id=eos_id,
             )
-            new_ids = out[0, ids.shape[1] :]
+            # CodingSSM.generate returns only newly sampled ids: (B, new_len)
+            new_ids = out[0] if out.dim() == 2 else out
             return tokenizer.decode(new_ids.tolist(), skip_special_tokens=True)
         except Exception as e:  # noqa: BLE001
             print(f"[gen] model.generate failed ({e}); falling back to manual loop", flush=True)
@@ -191,7 +196,7 @@ def load_humaneval(limit: int | None = None) -> list[dict]:
         out.append({
             "task_id": ex["task_id"],
             "prompt": ex["prompt"],
-            "test_code": ex["test"] + f"\ncheck({ex[entry_point]})",
+            "test_code": ex["test"] + f"\ncheck({ex['entry_point']})",
             "entry_point": ex["entry_point"],
         })
     return out[:limit] if limit else out
@@ -203,7 +208,7 @@ def load_mbpp(limit: int | None = None) -> list[dict]:
     out = []
     for ex in ds:
         out.append({
-            "task_id": f"MBPP/{ex[task_id]}",
+            "task_id": f"MBPP/{ex['task_id']}",
             "prompt": ex["text"],
             "test_code": "\n".join(ex["test_list"]),
             "entry_point": "",
@@ -240,11 +245,11 @@ def evaluate(name: str, problems: list[dict], model, tokenizer, device, max_new_
     t0 = time.time()
     for i, p in enumerate(problems):
         if name == "humaneval":
-            instruction = f"Complete the following Python function:\n\n```python\n{p[prompt]}\n```"
+            instruction = f"Complete the following Python function:\n\n```python\n{p['prompt']}\n```"
         elif name == "mbpp":
             instruction = (
                 f"Write a Python function for the task. The tests below must pass.\n\n"
-                f"Task: {p[prompt]}\n\nTests:\n{p[test_code]}"
+                f"Task: {p['prompt']}\n\nTests:\n{p['test_code']}"
             )
         else:
             instruction = p["prompt"]
@@ -268,7 +273,11 @@ def evaluate(name: str, problems: list[dict], model, tokenizer, device, max_new_
         })
         rate = n_pass / (i + 1)
         elapsed = time.time() - t0
-        print(f"  [{i+1}/{len(problems)}] {p[task_id]} {PASS if ok else fail}  pass@1={rate:.3f}  ({elapsed:.0f}s)", flush=True)
+        mark = "PASS" if ok else "FAIL"
+        print(
+            f"  [{i+1}/{len(problems)}] {p['task_id']} {mark}  pass@1={rate:.3f}  ({elapsed:.0f}s)",
+            flush=True,
+        )
 
     return {
         "benchmark": name,
@@ -319,7 +328,7 @@ def main() -> None:
 
     print("\n=== SUMMARY ===")
     for name, res in summary["results"].items():
-        print(f"  {name}: pass@1 = {res[pass@1]:.4f} ({res[n_passed]}/{res[n_total]})")
+        print(f"  {name}: pass@1 = {res['pass@1']:.4f} ({res['n_passed']}/{res['n_total']})")
     print(f"Wrote {out_path}")
 
 

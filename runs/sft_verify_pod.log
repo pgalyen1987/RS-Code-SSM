@@ -1,0 +1,13 @@
+/usr/local/lib/python3.12/dist-packages/huggingface_hub/file_download.py:949: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+  warnings.warn(
+Special tokens have been added in the vocabulary, make sure the associated word embeddings are fine-tuned or trained.
+[load] checkpoint=checkpoints/sft_clean/sft_latest.pt
+[load] missing=0 unexpected=0
+
+[humaneval] 15 problems
+  [1/15] HumanEval/0 FAIL  pass@1=0.000  (103s)
+  [2/15] HumanEval/1 FAIL  pass@1=0.000  (201s)
+  [3/15] HumanEval/2 FAIL  pass@1=0.000  (276s)
+  [4/15] HumanEval/3 FAIL  pass@1=0.000  (378s)
+  [5/15] HumanEval/4 FAIL  pass@1=0.000  (479s)
+  [6/15] HumanEval/5 FAIL  pass@1=0.000  (577s)
