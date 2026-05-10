@@ -41,7 +41,7 @@ from transformers import AutoTokenizer
 from transformers.optimization import Adafactor
 
 from arch import CodingSSM
-from arch.config import ModelConfig, ModelConfig700M, ModelConfig3B
+from arch.config import ModelConfig, ModelConfig700M, ModelConfig3B, ModelConfigCPU, ModelConfigTiny
 
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -745,7 +745,7 @@ def grpo_loss(
 
         with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
             logits, _ = model(full_ids)
-        gen_logits   = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]
+        gen_logits = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]
         gen_logprobs = torch.log_softmax(gen_logits.float(), dim=-1)
         token_lp     = gen_logprobs[0, torch.arange(len(gen_ids)), gen_ids.to(device)]
         seq_lp       = token_lp.mean()
@@ -1017,10 +1017,12 @@ def _main():
     parser.add_argument("--traces", default="data/grpo_problems.jsonl")
     parser.add_argument("--checkpoint", default=None, help="SFT checkpoint to start from")
     parser.add_argument("--output-dir", default="checkpoints/grpo")
-    parser.add_argument("--model-size", default="700m", choices=["700m", "3b"])
+    parser.add_argument("--model-size", default="700m", choices=["tiny", "cpu", "700m", "3b"])
     parser.add_argument("--group-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=5e-6)
     parser.add_argument("--max-steps", type=int, default=2000)
+    parser.add_argument("--grad-accum", type=int, default=None,
+                        help="Gradient accumulation steps (default: GRPOConfig.grad_accum_steps=8)")
     parser.add_argument("--kl-coeff", type=float, default=0.04)
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -1061,7 +1063,12 @@ def _main():
     requested_languages = {lang.strip().lower() for lang in args.languages.split(",") if lang.strip()}
     print(f"[INFO] Languages requested: {sorted(requested_languages)}", flush=True)
 
-    model_cfg = ModelConfig700M() if args.model_size == "700m" else ModelConfig3B()
+    model_cfg = {
+        "tiny": ModelConfigTiny,
+        "cpu": ModelConfigCPU,
+        "700m": ModelConfig700M,
+        "3b": ModelConfig3B,
+    }[args.model_size]()
     grpo_cfg = GRPOConfig(
         group_size=args.group_size,
         lr=args.lr,
@@ -1070,6 +1077,7 @@ def _main():
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         **({'save_every': args.save_every} if args.save_every is not None else {}),
+        **({'grad_accum_steps': args.grad_accum} if args.grad_accum is not None else {}),
     )
 
     tokenizer = AutoTokenizer.from_pretrained(

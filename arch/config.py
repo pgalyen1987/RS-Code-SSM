@@ -13,6 +13,23 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def ModelConfigTiny() -> "ModelConfig":
+    """
+    ~20M parameter config for local smoke / integration tests.
+    Runs a full SFT+GRPO cycle in under 5 minutes on CPU.
+    Same architecture shape as 700M — validates pipeline end-to-end.
+    """
+    return ModelConfig(
+        d_model=256, d_inner=512, n_layers=6,
+        n_heads=8, d_head=64, d_state=16, n_groups=2, chunk_size=64,
+        n_attn_heads=4, d_attn_head=64, attn_every_n=3, attn_window=128,
+        n_shared_attn=1, lora_rank=8,
+        n_experts=4, max_active_experts=2, min_active_experts=1, d_ffn=512,
+        vocab_size=152064, max_seq_len=512,
+        recursion_depth=1,
+    )
+
+
 def ModelConfigCPU() -> "ModelConfig":
     """
     ~150M parameter config for CPU training.

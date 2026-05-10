@@ -35,7 +35,7 @@ from transformers import AutoTokenizer
 from transformers.optimization import Adafactor
 
 from arch import CodingSSM
-from arch.config import ModelConfig700M, ModelConfig3B, ModelConfigCPU
+from arch.config import ModelConfig700M, ModelConfig3B, ModelConfigCPU, ModelConfigTiny
 
 
 # ─── Dataset ─────────────────────────────────────────────────────────────────
@@ -91,20 +91,32 @@ class ReasoningTraceDataset(Dataset):
         a_len = len(assistant_ids)
 
         # Find position of last occurrence
-        mask_until = 0
+        mask_until = None
         for i in range(len(ids) - a_len, -1, -1):
             if ids[i : i + a_len] == assistant_ids:
                 mask_until = i + a_len
                 break
 
+        # No assistant turn found → skip this record (return None, filtered in collate_fn)
+        if mask_until is None:
+            return None
+
         labels = ids[:]
         for i in range(mask_until):
             labels[i] = -100
+
+        # All tokens masked (assistant turn got truncated) → skip
+        if all(l == -100 for l in labels):
+            return None
 
         return torch.tensor(ids, dtype=torch.long), torch.tensor(labels, dtype=torch.long)
 
 
 def collate_fn(batch):
+    # Filter None entries (records without assistant turns)
+    batch = [b for b in batch if b is not None]
+    if not batch:
+        return None
     input_ids_list, labels_list = zip(*batch)
     max_len = max(x.shape[0] for x in input_ids_list)
 
@@ -207,6 +219,8 @@ def train(
 
     for epoch in range(epochs):
         for batch_idx, batch in enumerate(dataloader):
+            if batch is None:
+                continue
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
 
@@ -369,7 +383,7 @@ def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--traces", default="data/reasoning_traces.jsonl")
     parser.add_argument("--output-dir", default="checkpoints/sft")
-    parser.add_argument("--model-size", default="auto", choices=["auto", "cpu", "700m", "3b"])
+    parser.add_argument("--model-size", default="auto", choices=["auto", "tiny", "cpu", "700m", "3b"])
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -449,7 +463,10 @@ def _main():
     model_size = args.model_size
     if model_size == "auto":
         model_size = "700m" if torch.cuda.is_available() else "cpu"
-    if model_size == "cpu":
+    if model_size == "tiny":
+        model_cfg = ModelConfigTiny()
+        print("[INFO] Using tiny 20M config for local integration test", flush=True)
+    elif model_size == "cpu":
         model_cfg = ModelConfigCPU()
         print("[INFO] No GPU detected — using CPU-compatible 150M config (seq_len will be capped at 512)", flush=True)
     elif model_size == "700m":
