@@ -147,16 +147,16 @@ _DEBUG_PROBLEMS = [
 
 
 @torch.no_grad()
-def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 80) -> None:
-    """Generate from a fixed coding prompt and print the output — confirms the model
-    is learning next-token prediction, not just copying."""
+def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 200) -> None:
+    """Generate from a fixed coding prompt and print the output."""
     raw_model.eval()
     try:
         name, prompt_text = _DEBUG_PROBLEMS[step % len(_DEBUG_PROBLEMS)]
+        # End at assistant\n so the model generates naturally (including <think> if learned)
         prefix = (
             f"<|im_start|>system\n{_DEBUG_SYSTEM}<|im_end|>\n"
             f"<|im_start|>user\n{prompt_text}<|im_end|>\n"
-            f"<|im_start|>assistant\n```python\ndef {name}("
+            f"<|im_start|>assistant\n"
         )
         ids = tokenizer.encode(prefix, add_special_tokens=False)
         ids_t = torch.tensor([ids], dtype=torch.long, device=device)
@@ -190,11 +190,12 @@ def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 80) ->
             next_logits = logits[0, 0, :].float()
 
         decoded = tokenizer.decode(generated, skip_special_tokens=True)
-        has_return = "return" in decoded
-        has_def    = "def " in decoded or name in decoded
+        has_think  = "<think>" in decoded
+        has_return = "return"  in decoded
+        has_def    = "def "    in decoded
         print(
-            f"[SAMPLE step={step}] def {name}( → {repr(decoded[:120])}  "
-            f"| has_return={has_return} has_def={has_def}",
+            f"[SAMPLE step={step}] {name}: {repr(decoded[:160])}  "
+            f"| has_think={has_think} has_def={has_def} has_return={has_return}",
             flush=True,
         )
     except Exception as exc:
