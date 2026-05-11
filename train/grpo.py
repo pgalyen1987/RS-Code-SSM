@@ -514,7 +514,7 @@ def build_prompt(problem: dict, language: str = "python") -> str:
     return (
         f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        f"<|im_start|>assistant\n<think>\nI'll solve this step by step.\n</think>\n\n{code_prefix}"
+        f"<|im_start|>assistant\n{code_prefix}"
     )
 
 
@@ -743,16 +743,21 @@ def grpo_loss(
     for gen_ids, adv in valid:
         full_ids = torch.cat([prompt_ids[0].to(device), gen_ids.to(device)]).unsqueeze(0)
 
+        # Use depth=1 (states=[None]*n_layers) to match generation which uses depth=1
+        # via state-passing. Without this, loss uses recursion_depth=2 (training mode)
+        # while rollouts were sampled at depth=1, causing a biased gradient.
+        _d1 = [None] * model.config.n_layers
         with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            logits, _ = model(full_ids)
+            logits, _ = model(full_ids, states=_d1)
         gen_logits = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]
         gen_logprobs = torch.log_softmax(gen_logits.float(), dim=-1)
         token_lp     = gen_logprobs[0, torch.arange(len(gen_ids)), gen_ids.to(device)]
         seq_lp       = token_lp.mean()
 
         with torch.no_grad():
+            _d1_ref = [None] * ref_model.config.n_layers
             with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-                ref_logits, _ = ref_model(full_ids)
+                ref_logits, _ = ref_model(full_ids, states=_d1_ref)
             ref_logprobs = torch.log_softmax(
                 ref_logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :].float(), dim=-1
             )
@@ -848,10 +853,10 @@ class GRPOTrainer:
             lang = problem.get("language", "python").lower()
             ep = problem.get("entry_point", "")
             if lang == "python" and ep:
-                forced = f"<think>\nI'll solve this step by step.\n</think>\n\n```python\ndef {ep}("
+                forced = f"```python\ndef {ep}("
             else:
                 fence = "cpp" if lang in ("cpp", "c++") else lang
-                forced = f"<think>\nI'll solve this step by step.\n</think>\n\n```{fence}\n"
+                forced = f"```{fence}\n"
             text = forced + self.tokenizer.decode(gen_ids.tolist(), skip_special_tokens=False)
             thinking, solution = parse_response(text, language=language)
             r = compute_reward(

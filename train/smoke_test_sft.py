@@ -218,7 +218,12 @@ def run_smoke_test():
             labels = batch["labels"]
             logits, aux_loss = model(input_ids)
             B, L, V = logits.shape
-            loss = F.cross_entropy(logits.float().view(B * L, V), labels.view(B * L), ignore_index=-100)
+            # Shift for next-token prediction: logits[t] predicts ids[t+1]
+            loss = F.cross_entropy(
+                logits[:, :-1, :].float().contiguous().view(B * (L - 1), V),
+                labels[:, 1:].contiguous().view(B * (L - 1)),
+                ignore_index=-100,
+            )
             loss = loss + 0.01 * aux_loss.float()
             loss.backward()
             # Check gradient flow on first batch (before clip/step/zero)

@@ -232,7 +232,13 @@ def train(
                     aux_loss = aux_loss.mean()
                 B, L, V = logits.shape
                 # Cast to fp32 for numerical stability — cross_entropy in fp16 can NaN
-                loss_ce = F.cross_entropy(logits.float().view(B * L, V), labels.view(B * L), ignore_index=-100)
+                # Shift for next-token prediction: logits[t] predicts ids[t+1].
+                # logits[:, :-1] (drop last pos) vs labels[:, 1:] (drop first token).
+                loss_ce = F.cross_entropy(
+                    logits[:, :-1, :].float().contiguous().view(B * (L - 1), V),
+                    labels[:, 1:].contiguous().view(B * (L - 1)),
+                    ignore_index=-100,
+                )
                 loss = loss_ce + 0.01 * aux_loss.float()
                 if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                     loss = loss.mean()

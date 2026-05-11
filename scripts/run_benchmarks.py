@@ -8,9 +8,10 @@ Python execution. Writes a single JSON results file.
 
 Usage:
     python scripts/run_benchmarks.py \\
-        --checkpoint checkpoints/sft_clean/sft_latest.pt \\
+        --checkpoint checkpoints/grpo/grpo_best.pt \\
+        --model-size 700m \\
         --benchmarks humaneval mbpp bigcodebench \\
-        --output runs/bench_sft_clean.json
+        --output runs/bench_grpo.json
 """
 from __future__ import annotations
 
@@ -103,11 +104,11 @@ def extract_code(text: str, must_include: str = "") -> str:
 # Model loading + generation
 # ---------------------------------------------------------------------------
 
+# Must match GRPO training's build_system_prompt("python") exactly.
 SYSTEM_PROMPT = (
-    "You are an expert Python programmer and software engineer. "
-    "Think carefully step by step.\n"
-    "Use <think> tags to show your reasoning, then provide a clear solution.\n"
-    "Format:\n<think>\n[your reasoning]\n</think>\n[solution]"
+    "You are an expert Python programmer. Think carefully step by step before writing code.\n"
+    "Use <think> tags to show your reasoning, then provide the final solution.\n"
+    "Format:\n<think>\n[your chain-of-thought reasoning here]\n</think>\n```python\n[your solution here]\n```"
 )
 
 
@@ -134,54 +135,86 @@ def load_model(checkpoint: str, model_size: str, device: torch.device):
     return model, cfg
 
 
-def build_prompt_ids(tokenizer, instruction: str) -> torch.Tensor:
-    text = (
+def build_prompt_text(tokenizer, instruction: str, entry_point: str = "") -> tuple[str, str]:
+    """Build the ChatML prompt with the GRPO-style forced prefix.
+
+    Returns (full_text, forced_prefix) where forced_prefix is what was
+    appended after <|im_start|>assistant\n so extract_code can find ```python.
+    """
+    func_name = entry_point if entry_point else "solution"
+    forced_prefix = f"```python\ndef {func_name}("
+    full_text = (
         f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
         f"<|im_start|>user\n{instruction}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
+        f"<|im_start|>assistant\n{forced_prefix}"
     )
-    ids = tokenizer.encode(text, add_special_tokens=False)
-    return torch.tensor([ids], dtype=torch.long)
+    return full_text, forced_prefix
 
 
 @torch.no_grad()
-def generate(model, tokenizer, instruction: str, device, max_new_tokens: int = 768, temperature: float = 0.0) -> str:
-    ids = build_prompt_ids(tokenizer, instruction).to(device)
-    if hasattr(model, "generate"):
-        try:
-            eos_id = tokenizer.eos_token_id
-            if eos_id is None:
-                eos_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
-            out = model.generate(
-                ids,
-                max_new_tokens=max_new_tokens,
-                temperature=max(temperature, 1e-3),
-                top_p=0.95,
-                eos_token_id=eos_id,
-            )
-            # CodingSSM.generate returns only newly sampled ids: (B, new_len)
-            new_ids = out[0] if out.dim() == 2 else out
-            return tokenizer.decode(new_ids.tolist(), skip_special_tokens=True)
-        except Exception as e:  # noqa: BLE001
-            print(f"[gen] model.generate failed ({e}); falling back to manual loop", flush=True)
+def generate(
+    model,
+    tokenizer,
+    instruction: str,
+    device,
+    entry_point: str = "",
+    max_new_tokens: int = 768,
+    temperature: float = 0.0,
+) -> str:
+    """Generate using state-passing (depth=1) with repetition penalty.
 
-    # Greedy / argmax fallback when no .generate is available.
-    cur = ids
-    eos = tokenizer.eos_token_id or tokenizer.convert_tokens_to_ids("<|im_end|>")
-    out_tokens: list[int] = []
+    Returns forced_prefix + decoded_tokens so extract_code finds the ```python block.
+    """
+    full_text, forced_prefix = build_prompt_text(tokenizer, instruction, entry_point)
+    ids = tokenizer.encode(full_text, add_special_tokens=False)
+
+    stop_ids: set[int] = set()
+    if tokenizer.eos_token_id is not None:
+        stop_ids.add(tokenizer.eos_token_id)
+    for t in ["<|im_end|>", "<|endoftext|>"]:
+        tid = tokenizer.convert_tokens_to_ids(t)
+        if tid is not None and tid != tokenizer.unk_token_id:
+            stop_ids.add(tid)
+
+    input_tensor = torch.tensor([ids], dtype=torch.long, device=device)
+    states = [None] * model.config.n_layers
+    generated: list[int] = []
+
+    # Process full prompt at once to warm up SSM states (depth=1, matches inference)
+    logits, _, states = model(input_tensor, states=states, return_states=True)
+    next_logits = logits[0, -1, :].float()
+
     for _ in range(max_new_tokens):
-        logits, _ = model(cur)
-        next_logits = logits[0, -1].float()
-        if temperature > 0:
-            probs = torch.softmax(next_logits / max(temperature, 1e-3), dim=-1)
-            tok = int(torch.multinomial(probs, 1).item())
+        # Repetition penalty prevents degenerate token loops
+        if generated:
+            window = torch.tensor(generated[-64:], device=device)
+            counts = torch.bincount(window, minlength=next_logits.shape[0]).float()
+            next_logits = next_logits - counts * 5.0
+
+        if temperature <= 0:
+            nid = int(torch.argmax(next_logits).item())
         else:
-            tok = int(torch.argmax(next_logits).item())
-        if eos is not None and tok == eos:
+            probs = torch.softmax(next_logits / temperature, dim=-1)
+            sorted_p, sorted_idx = probs.sort(descending=True)
+            cum = sorted_p.cumsum(0)
+            mask = (cum - sorted_p) > 0.95
+            sorted_p[mask] = 0.0
+            sorted_p /= sorted_p.sum().clamp(min=1e-8)
+            nid = int(sorted_idx[torch.multinomial(sorted_p, 1)].item())
+
+        if nid in stop_ids:
             break
-        out_tokens.append(tok)
-        cur = torch.cat([cur, torch.tensor([[tok]], device=device, dtype=cur.dtype)], dim=1)
-    return tokenizer.decode(out_tokens, skip_special_tokens=True)
+        generated.append(nid)
+
+        logits, _, states = model(
+            torch.tensor([[nid]], dtype=torch.long, device=device),
+            states=states,
+            return_states=True,
+        )
+        next_logits = logits[0, 0, :].float()
+
+    decoded = tokenizer.decode(generated, skip_special_tokens=True)
+    return forced_prefix + decoded
 
 
 # ---------------------------------------------------------------------------
@@ -193,10 +226,14 @@ def load_humaneval(limit: int | None = None) -> list[dict]:
     ds = load_dataset("openai_humaneval", split="test")
     out = []
     for ex in ds:
+        test = ex["test"]
+        # Conditionally append check() only if the dataset version omits it
+        if f"check({ex['entry_point']})" not in test:
+            test = test + f"\ncheck({ex['entry_point']})"
         out.append({
             "task_id": ex["task_id"],
             "prompt": ex["prompt"],
-            "test_code": ex["test"] + f"\ncheck({ex['entry_point']})",
+            "test_code": test,
             "entry_point": ex["entry_point"],
         })
     return out[:limit] if limit else out
@@ -207,24 +244,40 @@ def load_mbpp(limit: int | None = None) -> list[dict]:
     ds = load_dataset("mbpp", split="test")
     out = []
     for ex in ds:
+        # Extract entry_point from first assert in test_list
+        ep = ""
+        for test_line in ex.get("test_list", []):
+            m = re.search(r"assert\s+(\w+)\s*\(", test_line)
+            if m:
+                ep = m.group(1)
+                break
         out.append({
             "task_id": f"MBPP/{ex['task_id']}",
             "prompt": ex["text"],
             "test_code": "\n".join(ex["test_list"]),
-            "entry_point": "",
+            "entry_point": ep,
         })
     return out[:limit] if limit else out
 
 
 def load_bigcodebench(limit: int | None = None) -> list[dict]:
     from datasets import load_dataset
-    # Use the standard BigCodeBench split. The dataset id has flipped over time;
-    # ``bigcode/bigcodebench`` is the canonical one as of 2025.
-    ds = load_dataset("bigcode/bigcodebench", split="v0.1.4")
+    # BigCodeBench split name varies by dataset version; try in order of likelihood.
+    splits_to_try = ["v0.1.4", "complete", "v0.1.0_hf", "v0.1.1_hf", "v0.1.2_hf", "v0.1.3_hf", "train"]
+    ds = None
+    for split in splits_to_try:
+        try:
+            ds = load_dataset("bigcode/bigcodebench", split=split)
+            print(f"[BCB] Loaded bigcode/bigcodebench split='{split}' ({len(ds)} problems)", flush=True)
+            break
+        except Exception as exc:  # noqa: BLE001
+            print(f"[BCB] split='{split}' failed: {exc}", flush=True)
+    if ds is None:
+        raise RuntimeError(
+            f"Could not load bigcode/bigcodebench with any of: {splits_to_try}"
+        )
     out = []
     for ex in ds:
-        # Each row carries: task_id, complete_prompt, instruct_prompt, code_prompt,
-        # canonical_solution, test, entry_point
         out.append({
             "task_id": ex.get("task_id"),
             "prompt": ex.get("complete_prompt") or ex.get("instruct_prompt") or "",
@@ -238,8 +291,16 @@ def load_bigcodebench(limit: int | None = None) -> list[dict]:
 # Eval driver
 # ---------------------------------------------------------------------------
 
-def evaluate(name: str, problems: list[dict], model, tokenizer, device, max_new_tokens: int, temperature: float) -> dict:
-    print(f"\n[{name}] {len(problems)} problems")
+def evaluate(
+    name: str,
+    problems: list[dict],
+    model,
+    tokenizer,
+    device,
+    max_new_tokens: int,
+    temperature: float,
+) -> dict:
+    print(f"\n[{name}] {len(problems)} problems", flush=True)
     n_pass = 0
     rows = []
     t0 = time.time()
@@ -254,8 +315,14 @@ def evaluate(name: str, problems: list[dict], model, tokenizer, device, max_new_
         else:
             instruction = p["prompt"]
 
-        text = generate(model, tokenizer, instruction, device, max_new_tokens, temperature)
-        code = extract_code(text, must_include=p.get("entry_point", "") or "")
+        entry_point = p.get("entry_point", "") or ""
+        text = generate(
+            model, tokenizer, instruction, device,
+            entry_point=entry_point,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+        )
+        code = extract_code(text, must_include=entry_point)
 
         if name == "humaneval":
             full_code = p["prompt"] + "\n" + code
@@ -291,12 +358,17 @@ def evaluate(name: str, problems: list[dict], model, tokenizer, device, max_new_
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
-    ap.add_argument("--model-size", default="3b", choices=["3b", "700m", "cpu"])
-    ap.add_argument("--tokenizer", default="Qwen/Qwen2.5-Coder-7B-Instruct")
-    ap.add_argument("--benchmarks", nargs="+", default=["humaneval", "mbpp"], choices=["humaneval", "mbpp", "bigcodebench"])
-    ap.add_argument("--limit", type=int, default=None, help="Limit problems per benchmark for smoke tests")
+    ap.add_argument("--model-size", default="700m", choices=["3b", "700m", "cpu"])
+    ap.add_argument("--tokenizer", default="Qwen/Qwen2.5-0.5B")
+    ap.add_argument(
+        "--benchmarks",
+        nargs="+",
+        default=["humaneval", "mbpp"],
+        choices=["humaneval", "mbpp", "bigcodebench"],
+    )
+    ap.add_argument("--limit", type=int, default=None, help="Limit problems per benchmark (smoke test)")
     ap.add_argument("--max-new-tokens", type=int, default=768)
-    ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--temperature", type=float, default=0.0, help="0=greedy (default), >0=sampling")
     ap.add_argument("--output", default="runs/benchmarks.json")
     args = ap.parse_args()
 
@@ -311,15 +383,21 @@ def main() -> None:
 
     if "humaneval" in args.benchmarks:
         problems = load_humaneval(args.limit)
-        summary["results"]["humaneval"] = evaluate("humaneval", problems, model, tokenizer, device, args.max_new_tokens, args.temperature)
+        summary["results"]["humaneval"] = evaluate(
+            "humaneval", problems, model, tokenizer, device, args.max_new_tokens, args.temperature
+        )
 
     if "mbpp" in args.benchmarks:
         problems = load_mbpp(args.limit)
-        summary["results"]["mbpp"] = evaluate("mbpp", problems, model, tokenizer, device, args.max_new_tokens, args.temperature)
+        summary["results"]["mbpp"] = evaluate(
+            "mbpp", problems, model, tokenizer, device, args.max_new_tokens, args.temperature
+        )
 
     if "bigcodebench" in args.benchmarks:
         problems = load_bigcodebench(args.limit)
-        summary["results"]["bigcodebench"] = evaluate("bigcodebench", problems, model, tokenizer, device, args.max_new_tokens, args.temperature)
+        summary["results"]["bigcodebench"] = evaluate(
+            "bigcodebench", problems, model, tokenizer, device, args.max_new_tokens, args.temperature
+        )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
