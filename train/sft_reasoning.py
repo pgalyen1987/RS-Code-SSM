@@ -204,26 +204,26 @@ def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 80) ->
 
 
 def _check_label_shift(input_ids: torch.Tensor, labels: torch.Tensor, tokenizer, step: int) -> None:
-    """Print first unmasked (input_id, label) pair to confirm labels are shifted by 1.
-    A healthy shift means label[t] == input_id[t+1].
+    """Verify label format: labels[t] == ids[t] for unmasked positions (prompt=-100).
+    The shift happens in the loss: loss(logits[:,:-1], labels[:,1:]).
     """
     ids   = input_ids[0].tolist()
     lbls  = labels[0].tolist()
-    pairs = [(ids[t], lbls[t]) for t in range(len(lbls)) if lbls[t] != -100]
-    if not pairs:
+    n_masked   = sum(1 for l in lbls if l == -100)
+    n_unmasked = sum(1 for l in lbls if l != -100)
+    if n_unmasked == 0:
         print(f"[LABEL_CHECK step={step}] WARNING: all labels masked — bad record", flush=True)
         return
-    # Show first 5 unmasked pairs
-    sample = pairs[:5]
-    ok = all(
-        t + 1 < len(ids) and lbls[t] == ids[t + 1]
-        for t in range(len(lbls))
-        if lbls[t] != -100 and t + 1 < len(ids)
-    )
-    decoded_pairs = [(tokenizer.decode([i]), tokenizer.decode([l])) for i, l in sample]
+    # Labels should equal input_ids at the same position (unshifted in dataset;
+    # the training loss applies labels[:,1:] vs logits[:,:-1] for the actual shift).
+    aligned = all(lbls[t] == ids[t] for t in range(len(lbls)) if lbls[t] != -100)
+    # Show first assistant token to confirm it's real content, not noise
+    first_asst = next(((ids[t], lbls[t]) for t in range(len(lbls)) if lbls[t] != -100), None)
+    decoded = tokenizer.decode([first_asst[1]]) if first_asst else "?"
     print(
-        f"[LABEL_CHECK step={step}] shift_ok={ok}  "
-        f"first 5: {decoded_pairs}",
+        f"[LABEL_CHECK step={step}] aligned={aligned} "
+        f"masked={n_masked} unmasked={n_unmasked} "
+        f"first_asst_tok={repr(decoded)}",
         flush=True,
     )
 
