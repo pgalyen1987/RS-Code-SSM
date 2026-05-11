@@ -206,7 +206,7 @@ def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 80) ->
 def _check_label_shift(input_ids: torch.Tensor, labels: torch.Tensor, tokenizer, step: int) -> None:
     """Confirm next-token prediction is correct.
     The loss uses logits[:,:-1] vs labels[:,1:], so logits[t] predicts ids[t+1].
-    We verify this directly: for each unmasked position t, labels[t+1] == ids[t+1].
+    labels are stored unshifted (labels[t]==ids[t]), so labels[:,1:] gives the right targets.
     """
     ids  = input_ids[0].tolist()
     lbls = labels[0].tolist()
@@ -214,21 +214,21 @@ def _check_label_shift(input_ids: torch.Tensor, labels: torch.Tensor, tokenizer,
     if not unmasked:
         print(f"[LABEL_CHECK step={step}] WARNING: all labels masked — bad record", flush=True)
         return
-    # After the loss slice (labels[:,1:]), logits[t] predicts lbls[t+1].
-    # Check: does lbls[t+1] == ids[t+1]? (i.e., label at t+1 is the correct next token)
-    ok = all(t + 1 < len(ids) and lbls[t + 1] == ids[t + 1]
-             for t in unmasked if t + 1 < len(lbls) and lbls[t + 1] != -100)
-    # Show first 3 effective (input_tok → target_tok) pairs as the loss sees them
+    # Verify labels are unshifted: lbls[t] == ids[t] for every unmasked position
+    ok = all(lbls[t] == ids[t] for t in unmasked)
+    # Show 3 pairs starting at the prompt→response boundary (t0-1 → t0 → t0+1 → t0+2)
+    # so we see what token the model first learns to generate
+    t0 = unmasked[0]
     pairs = []
-    for t in unmasked[:3]:
-        if t + 1 < len(ids):
+    for t in range(max(0, t0 - 1), min(t0 + 3, len(ids) - 1)):
+        if lbls[t + 1] != -100:  # only real loss pairs (target is unmasked)
             src = tokenizer.decode([ids[t]])
             tgt = tokenizer.decode([ids[t + 1]])
             pairs.append(f"{repr(src)}→{repr(tgt)}")
     print(
-        f"[LABEL_CHECK step={step}] next_tok_ok={ok} "
+        f"[LABEL_CHECK step={step}] labels_unshifted={ok} "
         f"masked={len(lbls)-len(unmasked)} unmasked={len(unmasked)} "
-        f"pairs={pairs}",
+        f"boundary_pairs={pairs}",
         flush=True,
     )
 
