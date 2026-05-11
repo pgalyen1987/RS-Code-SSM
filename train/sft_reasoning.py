@@ -204,26 +204,31 @@ def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 80) ->
 
 
 def _check_label_shift(input_ids: torch.Tensor, labels: torch.Tensor, tokenizer, step: int) -> None:
-    """Verify label format: labels[t] == ids[t] for unmasked positions (prompt=-100).
-    The shift happens in the loss: loss(logits[:,:-1], labels[:,1:]).
+    """Confirm next-token prediction is correct.
+    The loss uses logits[:,:-1] vs labels[:,1:], so logits[t] predicts ids[t+1].
+    We verify this directly: for each unmasked position t, labels[t+1] == ids[t+1].
     """
-    ids   = input_ids[0].tolist()
-    lbls  = labels[0].tolist()
-    n_masked   = sum(1 for l in lbls if l == -100)
-    n_unmasked = sum(1 for l in lbls if l != -100)
-    if n_unmasked == 0:
+    ids  = input_ids[0].tolist()
+    lbls = labels[0].tolist()
+    unmasked = [t for t in range(len(lbls)) if lbls[t] != -100]
+    if not unmasked:
         print(f"[LABEL_CHECK step={step}] WARNING: all labels masked — bad record", flush=True)
         return
-    # Labels should equal input_ids at the same position (unshifted in dataset;
-    # the training loss applies labels[:,1:] vs logits[:,:-1] for the actual shift).
-    aligned = all(lbls[t] == ids[t] for t in range(len(lbls)) if lbls[t] != -100)
-    # Show first assistant token to confirm it's real content, not noise
-    first_asst = next(((ids[t], lbls[t]) for t in range(len(lbls)) if lbls[t] != -100), None)
-    decoded = tokenizer.decode([first_asst[1]]) if first_asst else "?"
+    # After the loss slice (labels[:,1:]), logits[t] predicts lbls[t+1].
+    # Check: does lbls[t+1] == ids[t+1]? (i.e., label at t+1 is the correct next token)
+    ok = all(t + 1 < len(ids) and lbls[t + 1] == ids[t + 1]
+             for t in unmasked if t + 1 < len(lbls) and lbls[t + 1] != -100)
+    # Show first 3 effective (input_tok → target_tok) pairs as the loss sees them
+    pairs = []
+    for t in unmasked[:3]:
+        if t + 1 < len(ids):
+            src = tokenizer.decode([ids[t]])
+            tgt = tokenizer.decode([ids[t + 1]])
+            pairs.append(f"{repr(src)}→{repr(tgt)}")
     print(
-        f"[LABEL_CHECK step={step}] aligned={aligned} "
-        f"masked={n_masked} unmasked={n_unmasked} "
-        f"first_asst_tok={repr(decoded)}",
+        f"[LABEL_CHECK step={step}] next_tok_ok={ok} "
+        f"masked={len(lbls)-len(unmasked)} unmasked={len(unmasked)} "
+        f"pairs={pairs}",
         flush=True,
     )
 
