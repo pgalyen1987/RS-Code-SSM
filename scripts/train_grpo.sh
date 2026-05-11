@@ -18,17 +18,17 @@ fi
 LOG="logs/grpo_$(date +%Y%m%d_%H%M%S).log"
 echo "=== CodingSSM GRPO Training ===" | tee "$LOG"
 echo "SFT checkpoint: $SFT_CKPT" | tee -a "$LOG"
-echo "Dataset:        data/sft_clean.jsonl" | tee -a "$LOG"
+echo "Dataset:        data/grpo_problems.jsonl" | tee -a "$LOG"
 echo "Log:            $LOG" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
-# Smoke test before launching full GRPO run
-echo "[PRE-CHECK] Smoke test..." | tee -a "$LOG"
-python -u -m train.smoke_test_sft 2>&1 | tee -a "$LOG"
-echo "[PRE-CHECK] Passed." | tee -a "$LOG"
+# Quality check: verify the SFT model can generate plausible code before GRPO
+echo "[PRE-CHECK] Checking SFT quality..." | tee -a "$LOG"
+python -u scripts/check_sft_quality.py 2>&1 | tee -a "$LOG"
+echo "[PRE-CHECK] Done." | tee -a "$LOG"
 
 python -u -m train.grpo \
-  --traces data/sft_clean.jsonl \
+  --traces data/grpo_problems.jsonl \
   --checkpoint "$SFT_CKPT" \
   --output-dir checkpoints/grpo \
   --model-size 700m \
@@ -39,3 +39,18 @@ python -u -m train.grpo \
   --max-new-tokens 1024 \
   --temperature 0.8 \
   2>&1 | tee -a "$LOG"
+
+# Run benchmarks after GRPO completes
+GRPO_CKPT=$(ls -t checkpoints/grpo/*.pt 2>/dev/null | head -1)
+if [ -n "$GRPO_CKPT" ]; then
+  echo "" | tee -a "$LOG"
+  echo "=== Running Benchmarks ===" | tee -a "$LOG"
+  python -u scripts/run_benchmarks.py \
+    --checkpoint "$GRPO_CKPT" \
+    --model-size 700m \
+    --benchmarks humaneval mbpp bigcodebench \
+    --output "runs/bench_grpo_$(date +%Y%m%d_%H%M%S).json" \
+    2>&1 | tee -a "$LOG"
+else
+  echo "WARNING: No GRPO checkpoint found — skipping benchmarks." | tee -a "$LOG"
+fi

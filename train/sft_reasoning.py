@@ -131,6 +131,103 @@ def collate_fn(batch):
     return {"input_ids": padded_ids, "labels": padded_labels}
 
 
+# ─── Debug helpers ───────────────────────────────────────────────────────────
+
+_DEBUG_SYSTEM = (
+    "You are an expert Python programmer and software engineer. "
+    "Think carefully step by step.\nUse <think> tags to show your reasoning, then provide a clear solution.\n"
+    "Format:\n<think>\n[your reasoning]\n</think>\n[solution]"
+)
+
+_DEBUG_PROBLEMS = [
+    ("add",        "Write a Python function add(a, b) that returns the sum of two numbers."),
+    ("is_even",    "Write a Python function is_even(n) that returns True if n is even."),
+    ("factorial",  "Write a Python function factorial(n) that returns n! (base case: factorial(0)=1)."),
+]
+
+
+@torch.no_grad()
+def _debug_sample(raw_model, tokenizer, device, step: int, max_new: int = 80) -> None:
+    """Generate from a fixed coding prompt and print the output — confirms the model
+    is learning next-token prediction, not just copying."""
+    raw_model.eval()
+    try:
+        name, prompt_text = _DEBUG_PROBLEMS[step % len(_DEBUG_PROBLEMS)]
+        prefix = (
+            f"<|im_start|>system\n{_DEBUG_SYSTEM}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt_text}<|im_end|>\n"
+            f"<|im_start|>assistant\n```python\ndef {name}("
+        )
+        ids = tokenizer.encode(prefix, add_special_tokens=False)
+        ids_t = torch.tensor([ids], dtype=torch.long, device=device)
+
+        stop_ids: set[int] = set()
+        if tokenizer.eos_token_id is not None:
+            stop_ids.add(tokenizer.eos_token_id)
+        for tok_str in ["<|im_end|>", "<|endoftext|>"]:
+            tid = tokenizer.convert_tokens_to_ids(tok_str)
+            if tid is not None and tid != tokenizer.unk_token_id:
+                stop_ids.add(tid)
+
+        states = [None] * raw_model.config.n_layers
+        logits, _, states = raw_model(ids_t, states=states, return_states=True)
+        next_logits = logits[0, -1, :].float()
+
+        generated: list[int] = []
+        for _ in range(max_new):
+            if generated:
+                window = torch.tensor(generated[-64:], device=device)
+                counts = torch.bincount(window, minlength=next_logits.shape[0]).float()
+                next_logits = next_logits - counts * 5.0
+            nid = int(torch.argmax(next_logits).item())
+            if nid in stop_ids:
+                break
+            generated.append(nid)
+            logits, _, states = raw_model(
+                torch.tensor([[nid]], dtype=torch.long, device=device),
+                states=states, return_states=True,
+            )
+            next_logits = logits[0, 0, :].float()
+
+        decoded = tokenizer.decode(generated, skip_special_tokens=True)
+        has_return = "return" in decoded
+        has_def    = "def " in decoded or name in decoded
+        print(
+            f"[SAMPLE step={step}] def {name}( → {repr(decoded[:120])}  "
+            f"| has_return={has_return} has_def={has_def}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"[SAMPLE step={step}] generation failed: {exc}", flush=True)
+    finally:
+        raw_model.train()
+
+
+def _check_label_shift(input_ids: torch.Tensor, labels: torch.Tensor, tokenizer, step: int) -> None:
+    """Print first unmasked (input_id, label) pair to confirm labels are shifted by 1.
+    A healthy shift means label[t] == input_id[t+1].
+    """
+    ids   = input_ids[0].tolist()
+    lbls  = labels[0].tolist()
+    pairs = [(ids[t], lbls[t]) for t in range(len(lbls)) if lbls[t] != -100]
+    if not pairs:
+        print(f"[LABEL_CHECK step={step}] WARNING: all labels masked — bad record", flush=True)
+        return
+    # Show first 5 unmasked pairs
+    sample = pairs[:5]
+    ok = all(
+        t + 1 < len(ids) and lbls[t] == ids[t + 1]
+        for t in range(len(lbls))
+        if lbls[t] != -100 and t + 1 < len(ids)
+    )
+    decoded_pairs = [(tokenizer.decode([i]), tokenizer.decode([l])) for i, l in sample]
+    print(
+        f"[LABEL_CHECK step={step}] shift_ok={ok}  "
+        f"first 5: {decoded_pairs}",
+        flush=True,
+    )
+
+
 # ─── Trainer ─────────────────────────────────────────────────────────────────
 
 def train(
@@ -153,6 +250,8 @@ def train(
     time_limit_minutes: Optional[int] = None,
     stop_loss: Optional[float] = None,
     min_steps: int = 0,
+    tokenizer=None,
+    sample_every: int = 100,
 ):
     raw = model.module if isinstance(model, nn.DataParallel) else model
     raw.enable_gradient_checkpointing()
@@ -262,6 +361,12 @@ def train(
                 accum_loss = 0.0
                 accum_aux  = 0.0
                 accum_steps_done = 0
+
+                if tokenizer is not None and global_step == 1:
+                    _check_label_shift(input_ids, labels, tokenizer, step=1)
+
+                if tokenizer is not None and global_step % sample_every == 0:
+                    _debug_sample(raw, tokenizer, device, step=global_step)
 
                 if global_step % log_every == 0:
                     clipped = "CLIP " if grad_norm > max_grad_norm * 0.99 else ""
@@ -551,6 +656,8 @@ def _main():
         time_limit_minutes=args.time_limit_minutes,
         stop_loss=args.stop_loss,
         min_steps=args.min_steps,
+        tokenizer=tokenizer,
+        sample_every=100,
     )  # --init-checkpoint only loads weights; does not restore optimizer step
 
     if args.grpo_after:
