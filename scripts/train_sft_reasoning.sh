@@ -12,6 +12,15 @@ set -e
 cd "$(dirname "$0")/.."
 source .venv/bin/activate
 
+# Optional: --init-checkpoint <path>  passed through to sft_reasoning
+INIT_CKPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --init-checkpoint) INIT_CKPT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
 mkdir -p logs checkpoints/sft
 
 LOG="logs/sft_reasoning_$(date +%Y%m%d_%H%M%S).log"
@@ -36,6 +45,11 @@ echo "[INFO] Smoke test passed. Starting SFT training..." | tee -a "$LOG"
 
 # Step 3: Full SFT
 # H100 80GB: batch 4 × accum 8 = effective 32; seq_len 2048 with grad checkpoint
+INIT_ARG=""
+if [ -n "$INIT_CKPT" ]; then
+  echo "[INFO] Using init checkpoint: $INIT_CKPT" | tee -a "$LOG"
+  INIT_ARG="--init-checkpoint $INIT_CKPT"
+fi
 python -u -m train.sft_reasoning \
   --traces data/sft_clean.jsonl \
   --output-dir checkpoints/sft \
@@ -46,4 +60,5 @@ python -u -m train.sft_reasoning \
   --grad-accum 8 \
   --max-seq-len 2048 \
   --save-every 200 \
+  $INIT_ARG \
   2>&1 | tee -a "$LOG"
