@@ -262,16 +262,13 @@ def train(
     raw.enable_gradient_checkpointing()
     model.to(device)
 
-    # fp16 training: store weights + gradients in fp16 (3.3 GB each vs 6.6 GB).
-    # GradScaler is NOT used — it requires fp32 gradients, but our model is fp16.
-    # Adafactor keeps its own fp32 second moments internally, so it handles fp16
-    # parameters correctly without loss scaling.
-    # autocast is still used to keep activations in fp16 (saves activation memory).
+    # bf16 training: same dynamic range as fp32, no overflow to NaN.
+    # H100 has native bf16 Tensor Cores; no GradScaler needed.
     use_amp = device.type == "cuda"
     if use_amp:
-        model = model.to(torch.float16)
+        model = model.to(torch.bfloat16)
         free, total = torch.cuda.mem_get_info(device.index or 0)
-        print(f"[AMP] fp16 model + autocast enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
+        print(f"[AMP] bf16 model + autocast enabled. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = Adafactor(
@@ -329,7 +326,7 @@ def train(
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
 
-            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 logits, aux_loss = model(input_ids)
                 # DataParallel gathers per-device MoE aux as a vector — reduce to scalar
                 if isinstance(aux_loss, torch.Tensor):
@@ -357,6 +354,10 @@ def train(
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
                 grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm).item()
+                if math.isnan(grad_norm) or math.isinf(grad_norm):
+                    print(f"[WARN step={global_step+1}] NaN/Inf grad_norm — skipping step", flush=True)
+                    optimizer.zero_grad()
+                    continue
                 optimizer.step()
                 optimizer.zero_grad()
 

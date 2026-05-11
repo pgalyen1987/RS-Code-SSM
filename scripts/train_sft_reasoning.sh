@@ -55,7 +55,7 @@ python -u -m train.sft_reasoning \
   --output-dir checkpoints/sft \
   --model-size 700m \
   --epochs 3 \
-  --lr 3e-4 \
+  --lr 1e-4 \
   --batch-size 4 \
   --grad-accum 8 \
   --max-seq-len 2048 \

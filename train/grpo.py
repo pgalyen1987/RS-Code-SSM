@@ -747,7 +747,7 @@ def grpo_loss(
         # via state-passing. Without this, loss uses recursion_depth=2 (training mode)
         # while rollouts were sampled at depth=1, causing a biased gradient.
         _d1 = [None] * model.config.n_layers
-        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
             logits, _ = model(full_ids, states=_d1)
         gen_logits = logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :]
         gen_logprobs = torch.log_softmax(gen_logits.float(), dim=-1)
@@ -756,7 +756,7 @@ def grpo_loss(
 
         with torch.no_grad():
             _d1_ref = [None] * ref_model.config.n_layers
-            with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 ref_logits, _ = ref_model(full_ids, states=_d1_ref)
             ref_logprobs = torch.log_softmax(
                 ref_logits[:, L_prompt - 1 : L_prompt - 1 + len(gen_ids), :].float(), dim=-1
@@ -1127,17 +1127,16 @@ def _main():
         torch.cuda.empty_cache()
         print(f"[INFO] Loaded checkpoint: {args.checkpoint}", flush=True)
 
-    # fp16: halves weight memory (6.6 GB → 3.3 GB) on T4.
-    # Adafactor keeps fp32 second moments internally so optimizer is fine.
+    # bf16: same dynamic range as fp32, no overflow. H100 has native bf16 cores.
     if device.type == "cuda":
-        model = model.to(torch.float16)
+        model = model.to(torch.bfloat16)
         free, total = torch.cuda.mem_get_info(device.index or 0)
-        print(f"[INFO] fp16 model. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
+        print(f"[INFO] bf16 model. GPU free: {free/1e9:.1f}/{total/1e9:.1f} GB", flush=True)
 
     # Reference model (frozen copy) — must match dtype of training model
     ref_model = CodingSSM(model_cfg).to(device)
     if device.type == "cuda":
-        ref_model = ref_model.to(torch.float16)
+        ref_model = ref_model.to(torch.bfloat16)
     ref_model.load_state_dict(model.state_dict())
     for p in ref_model.parameters():
         p.requires_grad_(False)
