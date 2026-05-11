@@ -72,16 +72,11 @@ class DynamicRouter(nn.Module):
         if fixed_k is not None:
             k_used = torch.full((x.shape[0],), fixed_k, device=x.device, dtype=torch.long)
         else:
+            # Dynamic k: high confidence → 1 expert, mid → 2, low → max_k
             top1_score = probs.max(dim=-1).values   # (T,)
-            k_used = torch.where(
-                top1_score >= self.high_conf,
-                torch.ones_like(k_used := torch.full_like(top1_score, self.max_k, dtype=torch.long)),
-                torch.where(
-                    top1_score >= self.mid_conf,
-                    torch.full_like(k_used, 2),
-                    k_used,
-                )
-            )
+            k_used = torch.full((x.shape[0],), self.max_k, device=x.device, dtype=torch.long)
+            k_used[top1_score >= self.mid_conf]  = 2
+            k_used[top1_score >= self.high_conf] = 1
             k_used = k_used.clamp(self.min_k, self.max_k)
 
         # Always select top max_k, then zero-out beyond k_used

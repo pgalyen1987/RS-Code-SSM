@@ -208,6 +208,7 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
     optimizer.zero_grad()
     accum_loss = 0.0
+    accum_aux  = 0.0
     accum_steps_done = 0
 
     t_start = time.time()
@@ -238,34 +239,41 @@ def train(
             loss = loss / grad_accum
             loss.backward()
             accum_loss += loss.item() * grad_accum
+            accum_aux  += aux_loss.item() if isinstance(aux_loss, torch.Tensor) else float(aux_loss)
             accum_steps_done += 1
 
             if accum_steps_done >= grad_accum:
                 current_lr = get_lr(global_step)
                 for pg in optimizer.param_groups:
                     pg["lr"] = current_lr
-                torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm).item()
                 optimizer.step()
                 optimizer.zero_grad()
 
                 global_step += 1
                 avg_loss = accum_loss / accum_steps_done
+                avg_aux  = accum_aux  / accum_steps_done
                 accum_loss = 0.0
+                accum_aux  = 0.0
                 accum_steps_done = 0
 
                 if global_step % log_every == 0:
+                    clipped = "CLIP " if grad_norm > max_grad_norm * 0.99 else ""
                     if torch.cuda.is_available():
                         free, total = torch.cuda.mem_get_info(device.index or 0)
                         print(
                             f"epoch={epoch+1} step={global_step:05d}/{total_steps} "
-                            f"loss={avg_loss:.4f} lr={current_lr:.2e} "
+                            f"loss={avg_loss:.4f} aux={avg_aux:.4f} "
+                            f"gnorm={grad_norm:.3f} {clipped}"
+                            f"lr={current_lr:.2e} "
                             f"gpu={free/1e9:.1f}/{total/1e9:.1f}GB free",
                             flush=True,
                         )
                     else:
                         print(
                             f"epoch={epoch+1} step={global_step:05d}/{total_steps} "
-                            f"loss={avg_loss:.4f} lr={current_lr:.2e}",
+                            f"loss={avg_loss:.4f} aux={avg_aux:.4f} "
+                            f"gnorm={grad_norm:.3f} {clipped}lr={current_lr:.2e}",
                             flush=True,
                         )
 

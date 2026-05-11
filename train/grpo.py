@@ -769,7 +769,7 @@ def grpo_loss(
         del logits, gen_logits, gen_logprobs, token_lp, seq_lp, ref_logits, ref_logprobs, rollout_loss
         torch.cuda.empty_cache()
 
-    return total_pg / n_valid + cfg.kl_coeff * total_kl / n_valid
+    return total_pg / n_valid + cfg.kl_coeff * total_kl / n_valid, total_kl / n_valid
 
 
 # ─── Trainer ─────────────────────────────────────────────────────────────────
@@ -872,8 +872,8 @@ class GRPOTrainer:
         std_r = rewards_t.std() + 1e-8
         advantages = (rewards_t - rewards_t.mean()) / std_r
 
-        # 4. GRPO loss — backwars per-rollout inside grpo_loss to avoid OOM
-        loss_val = grpo_loss(
+        # 4. GRPO loss — backwards per-rollout inside grpo_loss to avoid OOM
+        loss_val, kl_val = grpo_loss(
             self.model,
             self.ref_model,
             prompt_ids,
@@ -884,7 +884,16 @@ class GRPOTrainer:
             grad_accum_steps=self.cfg.grad_accum_steps,
         )
 
-        return {"loss": loss_val, "mean_reward": mean_r, "rewards": rewards}
+        exec_rewards = sum(1 for r in rewards if r >= 1.0)
+        return {
+            "loss": loss_val,
+            "kl": kl_val,
+            "mean_reward": mean_r,
+            "min_reward": min(rewards),
+            "max_reward": max(rewards),
+            "exec_rewards": exec_rewards,
+            "rewards": rewards,
+        }
 
     def run(self):
         dataloader = DataLoader(
@@ -896,7 +905,8 @@ class GRPOTrainer:
         data_iter = iter(dataloader)
 
         self.optimizer.zero_grad()
-        accum_loss = 0.0
+        accum_loss   = 0.0
+        accum_kl     = 0.0
         accum_reward = 0.0
 
         dataset_size = len(self.dataset)
@@ -921,7 +931,8 @@ class GRPOTrainer:
 
             t0 = time.time()
             metrics = self.train_step(problem)
-            accum_loss += metrics["loss"]
+            accum_loss   += metrics["loss"]
+            accum_kl     += metrics["kl"]
             accum_reward += metrics["mean_reward"]
 
             # Gradient accumulation step
@@ -931,23 +942,31 @@ class GRPOTrainer:
                 for pg in self.optimizer.param_groups:
                     pg["lr"] = self.cfg.lr * lr_scale
 
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.cfg.max_grad_norm
+                ).item()
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-                avg_loss = accum_loss / self.cfg.grad_accum_steps
+                avg_loss   = accum_loss   / self.cfg.grad_accum_steps
+                avg_kl     = accum_kl     / self.cfg.grad_accum_steps
                 avg_reward = accum_reward / self.cfg.grad_accum_steps
                 elapsed = time.time() - t0
+                clipped = " CLIP" if grad_norm > self.cfg.max_grad_norm * 0.99 else ""
 
                 print(
-                    f"step={self.step+1:04d} loss={avg_loss:.4f} "
+                    f"step={self.step+1:04d} "
+                    f"loss={avg_loss:.4f} kl={avg_kl:.4f} "
                     f"reward={avg_reward:.3f} "
-                    f"rewards={[f'{r:.1f}' for r in metrics['rewards']]} "
+                    f"min={metrics['min_reward']:.2f} max={metrics['max_reward']:.2f} "
+                    f"exec={metrics['exec_rewards']}/{self.cfg.group_size} "
+                    f"gnorm={grad_norm:.3f}{clipped} "
                     f"lr={self.cfg.lr * lr_scale:.2e} "
                     f"({elapsed:.1f}s/step)",
                     flush=True,
                 )
-                accum_loss = 0.0
+                accum_loss   = 0.0
+                accum_kl     = 0.0
                 accum_reward = 0.0
 
                 if avg_reward > self.best_reward:
