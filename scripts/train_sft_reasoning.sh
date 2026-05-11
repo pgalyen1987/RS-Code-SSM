@@ -62,3 +62,6 @@ python -u -m train.sft_reasoning \
   --save-every 200 \
   $INIT_ARG \
   2>&1 | tee -a "$LOG"
+
+echo "[COLLECT] Saving SFT logs..." | tee -a "$LOG"
+python -u scripts/collect_logs.py --sft-log "$LOG" 2>&1 | tee -a "$LOG"

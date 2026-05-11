@@ -54,3 +54,6 @@ if [ -n "$GRPO_CKPT" ]; then
 else
   echo "WARNING: No GRPO checkpoint found — skipping benchmarks." | tee -a "$LOG"
 fi
+
+echo "[COLLECT] Saving run logs..." | tee -a "$LOG"
+python -u scripts/collect_logs.py 2>&1 | tee -a "$LOG"
