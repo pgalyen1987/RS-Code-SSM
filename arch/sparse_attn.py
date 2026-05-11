@@ -60,16 +60,18 @@ class SharedAttentionWeights(nn.Module):
     This module holds only the base weights; each layer wraps them with LoRA adapters.
     """
 
-    def __init__(self, d_model: int, n_heads: int, d_head: int, lora_rank: int):
+    def __init__(self, d_model: int, n_heads: int, d_head: int, lora_rank: int = 0):
         super().__init__()
         d_qkv = n_heads * d_head
         self.n_heads = n_heads
         self.d_head = d_head
 
-        self.q_proj = LoRALinear(d_model, d_qkv, rank=lora_rank)
-        self.k_proj = LoRALinear(d_model, d_qkv, rank=lora_rank)
-        self.v_proj = LoRALinear(d_model, d_qkv, rank=lora_rank)
-        self.o_proj = LoRALinear(d_qkv, d_model, rank=lora_rank)
+        # Plain linear — per-layer LoRA adapters live in SharedAttentionBlock, not here.
+        # (Previously used LoRALinear but those lora_A/B were never reached in _lora_proj.)
+        self.q_proj = nn.Linear(d_model, d_qkv, bias=False)
+        self.k_proj = nn.Linear(d_model, d_qkv, bias=False)
+        self.v_proj = nn.Linear(d_model, d_qkv, bias=False)
+        self.o_proj = nn.Linear(d_qkv, d_model, bias=False)
 
 
 def build_sliding_window_mask(seq_len: int, window: int, device: torch.device) -> torch.Tensor:
