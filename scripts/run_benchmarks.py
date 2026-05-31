@@ -105,10 +105,11 @@ def extract_code(text: str, must_include: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 # Must match GRPO training's build_system_prompt("python") exactly.
+# Must match scripts/prepare_sft_data.py and train/grpo.build_system_prompt.
+# Benchmarking with a different prompt than training measures the wrong model.
 SYSTEM_PROMPT = (
-    "You are an expert Python programmer. Think carefully step by step before writing code.\n"
-    "Use <think> tags to show your reasoning, then provide the final solution.\n"
-    "Format:\n<think>\n[your chain-of-thought reasoning here]\n</think>\n```python\n[your solution here]\n```"
+    "You are an expert Python programmer. "
+    "Write clean, correct, well-structured Python code."
 )
 
 
@@ -136,13 +137,16 @@ def load_model(checkpoint: str, model_size: str, device: torch.device):
 
 
 def build_prompt_text(tokenizer, instruction: str, entry_point: str = "") -> tuple[str, str]:
-    """Build the ChatML prompt with the GRPO-style forced prefix.
+    """Build the ChatML prompt with only the opening code fence as prefix.
 
     Returns (full_text, forced_prefix) where forced_prefix is what was
     appended after <|im_start|>assistant\n so extract_code can find ```python.
+
+    We prefix only ```python\n — the same way SFT assistant turns begin. We do
+    NOT force `def name(`: an SSM's state encodes the full generation history,
+    so a forced body prefix puts it in a state it never saw during training.
     """
-    func_name = entry_point if entry_point else "solution"
-    forced_prefix = f"```python\ndef {func_name}("
+    forced_prefix = "```python\n"
     full_text = (
         f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
         f"<|im_start|>user\n{instruction}<|im_end|>\n"
