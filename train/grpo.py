@@ -415,7 +415,7 @@ def compute_reward(
 
     Reward components:
       1.0  — code passes tests (primary)
-      0.1  — has <think> block AND code block (format)
+      0.1  — emits a well-formed code block with a def (format)
       0.05 — generated code aligns with a high-confidence EpiChat design pattern
     """
     r = 0.0
@@ -425,10 +425,12 @@ def compute_reward(
         passed = execute_solution(solution, test_code, language=language, timeout=cfg.exec_timeout)
         r += float(passed)
 
-    # Format bonus
-    has_think = bool(thinking.strip())
-    has_code = bool(solution.strip())
-    if has_think and has_code:
+    # Format bonus — reward a well-formed code block. The SFT format has no
+    # <think> block, so a <think>-gated bonus would never fire and would push
+    # the policy toward a format it was never trained on. A <think> block, when
+    # present, still counts (forward-compatible with reasoning traces).
+    has_code = bool(solution.strip()) and "def " in solution
+    if has_code:
         r += cfg.format_reward
 
     # Epistemic bonus: check if solution uses a well-established pattern
@@ -455,12 +457,20 @@ def compute_reward(
 # ─── Rollout generation ───────────────────────────────────────────────────────
 
 def build_system_prompt(language: str = "python") -> str:
-    """Return a language-specific system prompt."""
+    """Return a language-specific system prompt.
+
+    NOTE: must stay consistent with the SFT data format produced by
+    scripts/prepare_sft_data.py — same wording, no <think> block. A format
+    mismatch between SFT and GRPO prompts the model in a way it never saw
+    during SFT and degrades it.
+    """
     lang = language.lower()
     if lang in ("python",):
-        fence = "python"
-        expert = "Python"
-    elif lang in ("cpp", "c++"):
+        return (
+            "You are an expert Python programmer. "
+            "Write clean, correct, well-structured Python code."
+        )
+    if lang in ("cpp", "c++"):
         fence = "cpp"
         expert = "C++"
     elif lang in ("java",):
@@ -505,12 +515,11 @@ def build_prompt(problem: dict, language: str = "python") -> str:
     user_msg = problem["prompt"]
     if problem.get("test_code"):
         user_msg += f"\n\nYour solution must pass these tests:\n```{fence}\n{problem['test_code']}\n```"
-    # Force prefix past the structure the model struggles to generate from scratch.
-    # The model only needs to write the function body after this point.
-    if lang == "python" and problem.get("entry_point"):
-        code_prefix = f"```python\ndef {problem['entry_point']}("
-    else:
-        code_prefix = f"```{fence}\n"
+    # Prefix only the opening fence — exactly how SFT assistant turns begin.
+    # Do NOT force `def name(`: an SSM's sequential state encodes the full
+    # generation history, so forcing a body prefix puts it in a state it never
+    # reached during SFT and produces incoherent completions.
+    code_prefix = f"```{fence}\n"
     return (
         f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"

@@ -50,6 +50,15 @@ fi
 echo "[PASS] SFT checkpoint: $SFT_CKPT" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
+# ── Step 2b: SFT quality check (same prompting GRPO uses) ─────────────────────
+echo "[STEP 2b] SFT quality check..." | tee -a "$LOG"
+python -u scripts/check_sft_quality.py \
+  --checkpoint "$SFT_CKPT" \
+  --model-size tiny \
+  --device cpu \
+  2>&1 | tee -a "$LOG" || echo "[WARN] quality check non-zero exit (expected for tiny)" | tee -a "$LOG"
+echo "" | tee -a "$LOG"
+
 # ── Step 3: GRPO (tiny model, 3 steps) ───────────────────────────────────────
 echo "[STEP 3] GRPO training (tiny model, 3 steps)..." | tee -a "$LOG"
 python -u -m train.grpo \

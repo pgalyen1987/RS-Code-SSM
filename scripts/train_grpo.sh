@@ -22,9 +22,15 @@ echo "Dataset:        data/grpo_problems.jsonl" | tee -a "$LOG"
 echo "Log:            $LOG" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
+# Build the GRPO problem set (MBPP, with executable tests) if missing.
+if [ ! -s data/grpo_problems.jsonl ]; then
+  echo "[STEP 0] Generating GRPO problems (MBPP)..." | tee -a "$LOG"
+  python -u scripts/gen_grpo_problems.py --output data/grpo_problems.jsonl 2>&1 | tee -a "$LOG"
+fi
+
 # Quality check: verify the SFT model can generate plausible code before GRPO
 echo "[PRE-CHECK] Checking SFT quality..." | tee -a "$LOG"
-python -u scripts/check_sft_quality.py 2>&1 | tee -a "$LOG"
+python -u scripts/check_sft_quality.py --checkpoint "$SFT_CKPT" --model-size 700m 2>&1 | tee -a "$LOG"
 echo "[PRE-CHECK] Done." | tee -a "$LOG"
 
 python -u -m train.grpo \
@@ -32,6 +38,7 @@ python -u -m train.grpo \
   --checkpoint "$SFT_CKPT" \
   --output-dir checkpoints/grpo \
   --model-size 700m \
+  --languages python \
   --group-size 8 \
   --lr 5e-6 \
   --max-steps 2000 \

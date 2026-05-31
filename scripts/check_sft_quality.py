@@ -1,23 +1,38 @@
 """
-SFT quality check using GRPO-style prompting.
+SFT quality check — does the model generate runnable Python after SFT?
 
-Tests whether the model can complete function bodies given the same forced prefix
-that GRPO uses. This avoids false negatives from the cold-start context-association
-failure (model predicts newlines without the forced prefix).
+Prompts the model EXACTLY like the SFT data (scripts/prepare_sft_data.py) and
+GRPO (train/grpo.py): same system prompt, opening ```python fence only, no
+forced `def name(` body prefix (which would break SSM generation), no <think>.
+
+Usage:
+    python scripts/check_sft_quality.py                       # 700m on cuda
+    python scripts/check_sft_quality.py --model-size tiny --device cpu \
+        --checkpoint checkpoints/local_sft/sft_latest.pt
 """
-import sys, subprocess, textwrap, torch
-from transformers import AutoTokenizer
-from arch import CodingSSM
-from arch.config import ModelConfig700M
+import argparse
+import re
+import subprocess
+import sys
+import textwrap
 
-SYSTEM = (
-    "You are an expert Python programmer. Think carefully step by step before writing code.\n"
-    "Use <think> tags to show your reasoning, then provide the final solution.\n"
-    "Format:\n<think>\n[your chain-of-thought reasoning here]\n</think>\n```python\n[your solution here]\n```"
+import torch
+from transformers import AutoTokenizer
+
+from arch import CodingSSM
+from arch.config import (
+    ModelConfig700M, ModelConfig3B, ModelConfigCPU, ModelConfigTiny,
 )
 
-# GRPO-style forced prefix: <think> block + function signature start
-# Model only needs to complete the function body — same as GRPO rollout generation.
+# Must match scripts/prepare_sft_data.py SYSTEM_PROMPT and grpo.build_system_prompt.
+SYSTEM = (
+    "You are an expert Python programmer. "
+    "Write clean, correct, well-structured Python code."
+)
+
+# Must match train/grpo.py and train/sft_reasoning.py.
+TOKENIZER = "Qwen/Qwen2.5-Coder-7B-Instruct"
+
 PROBLEMS = [
     {
         "name": "add",
@@ -39,58 +54,42 @@ PROBLEMS = [
     },
 ]
 
-device = torch.device("cuda")
-print("[CHECK] Loading SFT checkpoint...", flush=True)
-ckpt = torch.load("checkpoints/sft/sft_latest.pt", map_location="cpu", weights_only=False)
-model = CodingSSM(ModelConfig700M()).to(torch.float16).to(device)
-model.load_state_dict(ckpt["model_state"])
-model.eval()
-step = ckpt.get("step", "?")
-best_loss = ckpt.get("best_loss", float("nan"))
-del ckpt
-torch.cuda.empty_cache()
-print(f"[CHECK] Loaded step={step} best_loss={best_loss:.4f}", flush=True)
-
-tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B", trust_remote_code=True)
-stop_ids = {tok.eos_token_id}
-for t in ["<|im_end|>", "<|endoftext|>"]:
-    tid = tok.convert_tokens_to_ids(t)
-    if tid and tid != tok.unk_token_id:
-        stop_ids.add(tid)
+_CONFIGS = {
+    "tiny": ModelConfigTiny,
+    "cpu": ModelConfigCPU,
+    "700m": ModelConfig700M,
+    "3b": ModelConfig3B,
+}
 
 
-def grpo_prefix(problem: dict) -> str:
-    """Build the same forced prefix that GRPO uses for rollout generation."""
+def build_prefix(problem: dict) -> str:
+    """Build the same prompt SFT/GRPO use: system + user + opening fence."""
     user_msg = problem["prompt"]
     if problem.get("test"):
         user_msg += f"\n\nYour solution must pass these tests:\n```python\n{problem['test']}\n```"
-    code_prefix = f"```python\ndef {problem['entry_point']}("
     return (
         f"<|im_start|>system\n{SYSTEM}<|im_end|>\n"
         f"<|im_start|>user\n{user_msg}<|im_end|>\n"
-        f"<|im_start|>assistant\n{code_prefix}"
+        f"<|im_start|>assistant\n```python\n"
     )
 
 
-def generate(prefix: str, max_new: int = 256) -> str:
-    """Generate with top-p sampling + repetition penalty (mirrors GRPO rollout settings)."""
+def generate(model, tok, prefix: str, device, stop_ids, max_new: int = 256) -> str:
+    """Top-p sampling + repetition penalty (mirrors GRPO rollout settings)."""
     ids = torch.tensor([tok.encode(prefix, add_special_tokens=False)], device=device)
-    generated = []
+    generated: list[int] = []
     states = [None] * model.config.n_layers
 
     with torch.no_grad():
-        # Process prefix once to get states (depth=1, same as GRPO)
         logits, _, states = model(ids, states=states, return_states=True)
         next_logits = logits[0, -1, :].float()
 
-        for step in range(max_new):
-            # Repetition penalty
+        for _ in range(max_new):
             if generated:
                 window = torch.tensor(generated[-64:], device=device)
                 counts = torch.bincount(window, minlength=next_logits.shape[0]).float()
                 next_logits = next_logits - counts * 5.0
 
-            # Top-p sampling
             probs = torch.softmax(next_logits / 0.7, dim=-1)
             sorted_p, sorted_idx = probs.sort(descending=True)
             cum = sorted_p.cumsum(0)
@@ -111,62 +110,96 @@ def generate(prefix: str, max_new: int = 256) -> str:
     return prefix + tok.decode(generated)
 
 
-def extract_code(text: str, entry_point: str) -> str:
-    """Extract the Python function from the generated text."""
-    import re
-    m = re.search(r"```python\s*(.*?)(?:```|$)", text, re.DOTALL)
+def extract_code(text: str) -> str:
+    """Pull the Python body out of the (possibly unclosed) ```python block."""
+    m = re.search(r"```python\s*(.*?)(?:```|<\|im_end\|>|$)", text, re.DOTALL)
     if m:
         return m.group(1).strip()
-    # Fallback: everything after the last ```python
     idx = text.rfind("```python")
     return text[idx + 9:].strip() if idx >= 0 else ""
 
 
 def run_code(code: str, test: str) -> bool:
-    """Execute code + test in a subprocess. Returns True if 'PASS' printed."""
     full = textwrap.dedent(code) + "\n" + test
     try:
         result = subprocess.run(
             [sys.executable, "-c", full],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
         )
         return "PASS" in result.stdout
     except Exception:
         return False
 
 
-passed_gen = 0   # generates syntactically recognizable code
-passed_exec = 0  # code actually passes the test
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint", default="checkpoints/sft/sft_latest.pt")
+    ap.add_argument("--model-size", default="700m", choices=list(_CONFIGS))
+    ap.add_argument("--device", default=None, help="cpu, cuda, cuda:0 ...")
+    args = ap.parse_args()
 
-for p in PROBLEMS:
-    print(f"\n[CHECK] --- {p['name']} ---", flush=True)
-    prefix = grpo_prefix(p)
-    response = generate(prefix)
-    # Show just the generated part (after the forced prefix)
-    generated_part = response[len(prefix):]
-    print(generated_part[:400], flush=True)
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"[CHECK] Device: {device}", flush=True)
 
-    code = extract_code(response, p["entry_point"])
-    has_return = "return" in code
-    has_def = "def " in code or f"def {p['entry_point']}" in response
-    print(f"[CHECK] has_return={has_return} has_def={has_def}", flush=True)
+    print(f"[CHECK] Loading {args.checkpoint} ...", flush=True)
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    model = CodingSSM(_CONFIGS[args.model_size]())
+    model.load_state_dict(ckpt["model_state"])
+    # bf16 on GPU (matches training), fp32 on CPU (no bf16 matmul kernels there).
+    if device.type == "cuda":
+        model = model.to(torch.bfloat16)
+    model = model.to(device).eval()
+    step = ckpt.get("step", "?")
+    best_loss = ckpt.get("best_loss", float("nan"))
+    del ckpt
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    print(f"[CHECK] Loaded step={step} best_loss={best_loss:.4f}", flush=True)
 
-    if has_return or has_def:
-        passed_gen += 1
-        if code and run_code(code, p["test"]):
-            passed_exec += 1
-            print("[CHECK] EXEC: PASS", flush=True)
-        else:
-            print("[CHECK] EXEC: FAIL (wrong answer or syntax error)", flush=True)
+    tok = AutoTokenizer.from_pretrained(TOKENIZER, trust_remote_code=True)
+    stop_ids = {tok.eos_token_id}
+    for t in ["<|im_end|>", "<|endoftext|>"]:
+        tid = tok.convert_tokens_to_ids(t)
+        if tid is not None and tid != tok.unk_token_id:
+            stop_ids.add(tid)
 
-print(f"\n[CHECK] Generates code: {passed_gen}/{len(PROBLEMS)}", flush=True)
-print(f"[CHECK] Passes tests:   {passed_exec}/{len(PROBLEMS)}", flush=True)
+    passed_gen = 0
+    passed_exec = 0
+    for p in PROBLEMS:
+        print(f"\n[CHECK] --- {p['name']} ---", flush=True)
+        prefix = build_prefix(p)
+        response = generate(model, tok, prefix, device, stop_ids)
+        print(response[len(prefix):][:400], flush=True)
 
-if passed_gen == 0:
-    print("[CHECK] FAIL: Model generates no code at all — SFT collapsed.", flush=True)
-    sys.exit(1)
-elif passed_exec == 0:
-    print("[CHECK] WARN: Code generated but nothing passes — model partially learned, proceeding with GRPO.", flush=True)
-    # Don't exit 1 — GRPO can still improve a model that generates plausible but wrong code
-else:
-    print(f"[CHECK] PASS: {passed_exec}/{len(PROBLEMS)} solutions correct — SFT healthy.", flush=True)
+        code = extract_code(response)
+        has_return = "return" in code
+        has_def = "def " in code
+        print(f"[CHECK] has_def={has_def} has_return={has_return}", flush=True)
+
+        if has_return or has_def:
+            passed_gen += 1
+            if code and run_code(code, p["test"]):
+                passed_exec += 1
+                print("[CHECK] EXEC: PASS", flush=True)
+            else:
+                print("[CHECK] EXEC: FAIL (wrong answer or syntax error)", flush=True)
+
+    print(f"\n[CHECK] Generates code: {passed_gen}/{len(PROBLEMS)}", flush=True)
+    print(f"[CHECK] Passes tests:   {passed_exec}/{len(PROBLEMS)}", flush=True)
+
+    if passed_gen == 0:
+        print("[CHECK] FAIL: model generates no code at all — SFT collapsed.", flush=True)
+        sys.exit(1)
+    elif passed_exec == 0:
+        print("[CHECK] WARN: code generated but nothing passes — proceeding with GRPO.", flush=True)
+    else:
+        print(f"[CHECK] PASS: {passed_exec}/{len(PROBLEMS)} correct — SFT healthy.", flush=True)
+
+
+if __name__ == "__main__":
+    main()

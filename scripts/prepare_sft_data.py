@@ -90,7 +90,7 @@ def build_chatml(problem: str, solution: str) -> str:
         f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n"
         f"<|im_start|>user\n{problem.strip()}<|im_end|>\n"
         f"<|im_start|>assistant\n"
-        f"```python\n{solution.strip()}\n```"
+        f"```python\n{solution.strip()}\n"
         f"<|im_end|>"
     )
 

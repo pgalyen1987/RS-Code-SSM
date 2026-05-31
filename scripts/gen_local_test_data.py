@@ -89,7 +89,10 @@ EXAMPLES = [
 out = Path(__file__).parent.parent / "data" / "local_test.jsonl"
 with open(out, "w") as f:
     for prompt, thinking, solution, test_code in EXAMPLES:
-        assistant = f"<think>\n{thinking}\n</think>\n```python\n{solution}\n```"
+        # Format A — must match scripts/prepare_sft_data.py: no <think>, and the
+        # assistant turn ends with the code (no closing ``` fence). A closing
+        # fence teaches the model ``` -> <|im_end|>, collapsing generation.
+        assistant = f"```python\n{solution}\n"
         chatml = (
             f"<|im_start|>system\n{SYSTEM}<|im_end|>\n"
             f"<|im_start|>user\n{prompt}<|im_end|>\n"

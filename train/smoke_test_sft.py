@@ -301,10 +301,16 @@ def run_smoke_test():
     assert r == 1.1, f"Expected reward 1.1 (1.0 pass + 0.1 format), got {r}"
     print(f"    compute_reward (passing): {r:.2f} — PASS")
 
-    # reward function: failing solution
+    # reward function: failing solution that is still a well-formed code block
+    # earns the format bonus only (no <think> required — SFT format has none).
     r_fail = compute_reward("def count(n): return []", "", test_code, cfg_grpo)
-    assert r_fail == 0.0, f"Expected 0 for failing + no think, got {r_fail}"
-    print(f"    compute_reward (failing): {r_fail:.2f} — PASS")
+    assert r_fail == 0.1, f"Expected 0.1 (format bonus, tests fail), got {r_fail}"
+    print(f"    compute_reward (failing, valid code): {r_fail:.2f} — PASS")
+
+    # reward function: non-code response earns nothing
+    r_none = compute_reward("I cannot help with that.", "", test_code, cfg_grpo)
+    assert r_none == 0.0, f"Expected 0.0 for non-code response, got {r_none}"
+    print(f"    compute_reward (non-code): {r_none:.2f} — PASS")
 
     # GRPO model forward (2-value unpack — the bug we fixed)
     model.eval()
